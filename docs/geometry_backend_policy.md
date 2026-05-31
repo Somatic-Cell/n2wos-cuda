@@ -28,7 +28,6 @@ spatial_median
 sah
 elh
 radix
-rebin_radix
 ```
 
 Use:
@@ -47,7 +46,7 @@ sah:
   Build can be more expensive, but WoS performs many steady-state queries per mesh.
 
 rebin_radix:
-  Preferred robust fast-builder candidate when radix-like ordering is desirable but the primitive distribution may be numerically challenging.
+  Disabled for current cuBQL main. `cuBQL::cuda::rebinRadixBuilder` is declared in `builder/cuda.h`, but the included implementation headers do not provide a linkable definition. Re-enable only after cuBQL exposes an implemented entry point.
 
 radix:
   Fast-builder candidate. Keep only if it validates on near-surface and OBJ stress tests.

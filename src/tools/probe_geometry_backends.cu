@@ -47,7 +47,7 @@ struct Options {
   int leaf_size = 8;
   std::vector<int> cubql_leaf_sizes = {8};
   bool cubql_leaf_sizes_explicit = false;
-  std::vector<std::string> cubql_build_methods = {"spatial_median", "radix", "rebin_radix", "sah"};
+  std::vector<std::string> cubql_build_methods = {"spatial_median", "radix", "sah", "elh"};
   int queries = 262144;
   int validate = 2048;
   int repeat = 10;
@@ -105,7 +105,10 @@ std::string canonical_build_method(std::string method) {
   if (method == "sm" || method == "spatial-median") return "spatial_median";
   if (method == "surface_area_heuristic") return "sah";
   if (method == "morton" || method == "radix_morton") return "radix";
-  if (method == "rebin" || method == "robust_radix" || method == "modified_radix") return "rebin_radix";
+  if (method == "rebin" || method == "robust_radix" || method == "modified_radix" ||
+      method == "rebin_radix" || method == "rebin-radix") {
+    throw std::runtime_error("cuBQL build method rebin_radix is disabled: current cuBQL main declares rebinRadixBuilder but does not provide a linkable implementation header");
+  }
   return method;
 }
 
@@ -129,9 +132,8 @@ std::vector<int> parse_int_list(const std::string& text) {
 }
 
 void validate_build_method_name(const std::string& method) {
-  if (method != "spatial_median" && method != "sah" && method != "elh" &&
-      method != "radix" && method != "rebin_radix") {
-    throw std::runtime_error("cuBQL build method must be one of: spatial_median, sah, elh, radix, rebin_radix");
+  if (method != "spatial_median" && method != "sah" && method != "elh" && method != "radix") {
+    throw std::runtime_error("cuBQL build method must be one of: spatial_median, sah, elh, radix; rebin_radix is disabled for current cuBQL main");
   }
 }
 
@@ -173,7 +175,7 @@ void print_usage(std::ostream& out, const char* argv0) {
       << "  --shell-max <float>                near_boundary_shell maximum offset [0.25]\n"
       << "  --plane-z <float>                  z coordinate for interior_slice [0]\n"
       << "  --cubql-build-method <name>        Single method; kept for backward compatibility\n"
-      << "  --cubql-build-methods <csv>        spatial_median,radix,rebin_radix,sah,elh or sweep/all [spatial_median,radix,rebin_radix,sah]\n"
+      << "  --cubql-build-methods <csv>        spatial_median,radix,sah,elh or sweep/all [spatial_median,radix,sah,elh]; rebin_radix disabled\n"
       << "  --run-custom 0|1                   Run in-tree median BVH backend [1]\n"
       << "  --run-cubql 0|1                    Run cuBQL backends if compiled [1]\n"
       << "  --output <path>                    JSON output [results/probe_geometry_backends.json]\n"
@@ -237,7 +239,7 @@ Options parse_options(int argc, char** argv) {
     } else if (arg == "--cubql-build-methods") {
       const std::string value = trim(require_value(i, argc, argv));
       if (value == "sweep" || value == "all") {
-        opt.cubql_build_methods = {"spatial_median", "sah", "elh", "radix", "rebin_radix"};
+        opt.cubql_build_methods = {"spatial_median", "sah", "elh", "radix"};
       } else {
         opt.cubql_build_methods.clear();
         for (const std::string& method : parse_string_list(value)) {

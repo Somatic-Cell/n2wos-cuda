@@ -56,7 +56,10 @@ std::string canonical_build_method(std::string build_method) {
   if (build_method == "sm" || build_method == "spatial-median") return "spatial_median";
   if (build_method == "surface_area_heuristic") return "sah";
   if (build_method == "morton" || build_method == "radix_morton") return "radix";
-  if (build_method == "rebin" || build_method == "robust_radix" || build_method == "modified_radix") return "rebin_radix";
+  if (build_method == "rebin" || build_method == "robust_radix" || build_method == "modified_radix" ||
+      build_method == "rebin_radix" || build_method == "rebin-radix") {
+    throw std::runtime_error("cuBQL build method rebin_radix is disabled: current cuBQL main declares rebinRadixBuilder but does not provide a linkable implementation header");
+  }
   return build_method;
 }
 
@@ -78,7 +81,7 @@ cuBQL::BuildConfig make_build_config(int leaf_size, const std::string& build_met
   }
   cuBQL::BuildConfig config(leaf_size);
   config.maxAllowedLeafSize = leaf_size;
-  if (build_method == "spatial_median" || build_method == "radix" || build_method == "rebin_radix") {
+  if (build_method == "spatial_median" || build_method == "radix") {
     return config;
   }
   if (build_method == "sah") {
@@ -90,7 +93,7 @@ cuBQL::BuildConfig make_build_config(int leaf_size, const std::string& build_met
     return config;
   }
   throw std::runtime_error("unknown cuBQL build method: " + build_method +
-                           " (expected spatial_median, sah, elh, radix, or rebin_radix)");
+                           " (expected spatial_median, sah, elh, or radix; rebin_radix disabled)");
 }
 
 void build_cubql_bvh(cuBQL::bvh3f& bvh,
@@ -109,8 +112,6 @@ void build_cubql_bvh(cuBQL::bvh3f& bvh,
     cuBQL::cuda::sahBuilder(bvh, d_boxes, primitive_count, config);
   } else if (build_method == "radix") {
     cuBQL::cuda::radixBuilder(bvh, d_boxes, primitive_count, config);
-  } else if (build_method == "rebin_radix") {
-    cuBQL::cuda::rebinRadixBuilder(bvh, d_boxes, primitive_count, config);
   } else {
     throw std::runtime_error("unknown cuBQL build method: " + build_method);
   }

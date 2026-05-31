@@ -14,8 +14,7 @@
     "spatial_median",
     "sah",
     "elh",
-    "radix",
-    "rebin_radix"
+    "radix"
   ],
   "production_backend_policy": {
     "allow_one_time_mesh_upload": true,

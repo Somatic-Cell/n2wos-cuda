@@ -102,7 +102,7 @@ Patch 0003 should add a tiny-cuda-nn device-resident cache probe after the geome
 - Optional NVIDIA cuBQL integration is added behind `-DN2WOS_ENABLE_CUBQL=ON`.
 - A cuBQL-backed `CuBqlBvh` exposes the same device-pointer closest-point query API.
 - `n2wos_probe_geometry_backends` compares enabled geometry backends under the same query set and timing scope.
-- 0002a adds cuBQL builder sweeps: `spatial_median`, `sah`, `elh`, `radix`, and `rebin_radix`.
+- 0002a adds cuBQL builder sweeps: `spatial_median`, `sah`, `elh`, and `radix`. `rebin_radix` is disabled for current cuBQL main because `rebinRadixBuilder` is declared but not defined by the included implementation headers.
 - 0002a adds query distributions: `uniform_box`, `interior_slice`, `near_boundary_shell`, and `wos_like_prefix`.
 - `docs/geometry_backend_policy.md` records the backend policy and acceptance criteria.
 
