@@ -23,6 +23,10 @@ meshes/processed/*
 .idea/
 .DS_Store
 
+
+# Third-party checkouts fetched locally; not vendored by patches.
+external/cuBQL/
+
 # Python helper cache
 __pycache__/
 *.pyc

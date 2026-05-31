@@ -25,6 +25,18 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CUDA_ARCHITECTURES": "86"
       }
+    },
+    {
+      "name": "cuda-release-cubql",
+      "displayName": "CUDA Release with cuBQL",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cuda-release-cubql",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "86",
+        "N2WOS_ENABLE_CUBQL": "ON",
+        "N2WOS_CUBQL_DIR": "${sourceDir}/external/cuBQL"
+      }
     }
   ],
   "buildPresets": [
@@ -35,6 +47,10 @@
     {
       "name": "cuda-debug",
       "configurePreset": "cuda-debug"
+    },
+    {
+      "name": "cuda-release-cubql",
+      "configurePreset": "cuda-release-cubql"
     }
   ]
 }

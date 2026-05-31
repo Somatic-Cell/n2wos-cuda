@@ -7,6 +7,7 @@ project(n2wos_cuda
 
 include(GNUInstallDirs)
 find_package(CUDAToolkit REQUIRED)
+include(cmake/Dependencies.cmake)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,6 +55,32 @@ target_compile_options(n2wos_cuda PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
   $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 
+if(N2WOS_HAS_CUBQL)
+  add_library(n2wos_cubql STATIC
+    src/cuda/cubql_bvh.cu)
+
+  target_include_directories(n2wos_cubql
+    PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda)
+
+  target_link_libraries(n2wos_cubql
+    PUBLIC
+      n2wos_core
+      CUDA::cudart
+      cuBQL)
+
+  target_compile_features(n2wos_cubql PUBLIC cxx_std_17)
+  target_compile_definitions(n2wos_cubql PUBLIC N2WOS_HAS_CUBQL=1)
+  set_target_properties(n2wos_cubql PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+  target_compile_options(n2wos_cubql PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+endif()
+
 add_executable(n2wos_probe_cuda_bvh
   src/tools/probe_cuda_bvh.cpp)
 
@@ -62,3 +89,25 @@ target_link_libraries(n2wos_probe_cuda_bvh
     n2wos_cuda)
 
 install(TARGETS n2wos_probe_cuda_bvh RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+
+add_executable(n2wos_probe_geometry_backends
+  src/tools/probe_geometry_backends.cu)
+
+target_link_libraries(n2wos_probe_geometry_backends
+  PRIVATE
+    n2wos_cuda)
+
+if(N2WOS_HAS_CUBQL)
+  target_link_libraries(n2wos_probe_geometry_backends PRIVATE n2wos_cubql)
+  target_compile_definitions(n2wos_probe_geometry_backends PRIVATE N2WOS_HAS_CUBQL=1)
+endif()
+
+set_target_properties(n2wos_probe_geometry_backends PROPERTIES
+  CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+target_compile_options(n2wos_probe_geometry_backends PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+  $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+
+install(TARGETS n2wos_probe_geometry_backends RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include <cuda_runtime_api.h>
+
 #include "n2wos/types.hpp"
 #include "bvh_types.cuh"
 
@@ -40,6 +42,19 @@ class CudaBvh {
   CudaBvh& operator=(CudaBvh&& other) noexcept;
 
   CudaBvhQueryResult query(const std::vector<Vec3f>& points, int block_size = 128) const;
+
+  // Production-oriented device-resident entry point. Inputs and outputs are CUDA
+  // device pointers owned by the caller. No host transfer or allocation occurs
+  // in this call. It is the entry point that later WoS kernels/wavefront stages
+  // should use, rather than the host-vector probe wrapper above.
+  void query_device(const DeviceVec3* d_points,
+                    int query_count,
+                    float* d_distance2,
+                    DeviceVec3* d_closest,
+                    int* d_triangle_id,
+                    int* d_overflow,
+                    int block_size = 128,
+                    cudaStream_t stream = 0) const;
 
   std::size_t triangle_count() const { return triangle_count_; }
   std::size_t node_count() const { return node_count_; }

@@ -225,15 +225,44 @@ void CudaBvh::release() {
   index_count_ = 0;
 }
 
-CudaBvhQueryResult CudaBvh::query(const std::vector<Vec3f>& points, int block_size) const {
+void CudaBvh::query_device(const DeviceVec3* d_points,
+                           int query_count,
+                           float* d_distance2,
+                           DeviceVec3* d_closest,
+                           int* d_triangle_id,
+                           int* d_overflow,
+                           int block_size,
+                           cudaStream_t stream) const {
   if (!d_triangles_ || !d_nodes_ || !d_triangle_indices_) {
-    throw std::runtime_error("CudaBvh::query called on empty BVH");
+    throw std::runtime_error("CudaBvh::query_device called on empty BVH");
   }
-  if (points.empty()) {
-    return {};
+  if (query_count < 0) {
+    throw std::runtime_error("CudaBvh::query_device query_count must be non-negative");
+  }
+  if (query_count == 0) return;
+  if (!d_points || !d_distance2 || !d_closest || !d_triangle_id || !d_overflow) {
+    throw std::runtime_error("CudaBvh::query_device received a null device pointer");
   }
   if (block_size <= 0 || block_size > 1024) {
     throw std::runtime_error("CUDA block size must be in [1, 1024]");
+  }
+
+  const int grid_size = (query_count + block_size - 1) / block_size;
+  closest_point_bvh_kernel<<<grid_size, block_size, 0, stream>>>(d_points,
+                                                                query_count,
+                                                                d_triangles_,
+                                                                d_nodes_,
+                                                                d_triangle_indices_,
+                                                                d_distance2,
+                                                                d_closest,
+                                                                d_triangle_id,
+                                                                d_overflow);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
+}
+
+CudaBvhQueryResult CudaBvh::query(const std::vector<Vec3f>& points, int block_size) const {
+  if (points.empty()) {
+    return {};
   }
 
   std::vector<DeviceVec3> h_points(points.size());
@@ -261,20 +290,9 @@ CudaBvhQueryResult CudaBvh::query(const std::vector<Vec3f>& points, int block_si
     N2WOS_CUDA_CHECK(cudaEventCreate(&stop));
 
     const int query_count = static_cast<int>(points.size());
-    const int grid_size = (query_count + block_size - 1) / block_size;
-
     N2WOS_CUDA_CHECK(cudaEventRecord(start));
-    closest_point_bvh_kernel<<<grid_size, block_size>>>(d_points,
-                                                        query_count,
-                                                        d_triangles_,
-                                                        d_nodes_,
-                                                        d_triangle_indices_,
-                                                        d_distance2,
-                                                        d_closest,
-                                                        d_triangle_id,
-                                                        d_overflow);
+    query_device(d_points, query_count, d_distance2, d_closest, d_triangle_id, d_overflow, block_size, 0);
     N2WOS_CUDA_CHECK(cudaEventRecord(stop));
-    N2WOS_CUDA_CHECK(cudaGetLastError());
     N2WOS_CUDA_CHECK(cudaEventSynchronize(stop));
 
     float milliseconds = 0.0f;
