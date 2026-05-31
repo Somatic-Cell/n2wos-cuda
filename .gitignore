@@ -1,0 +1,33 @@
+# Build outputs
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Runtime outputs
+results/*
+!results/.gitkeep
+*.log
+*.tmp
+
+# Mesh data can be large; keep README/placeholders under version control.
+meshes/raw/*
+!meshes/raw/.gitkeep
+meshes/processed/*
+!meshes/processed/.gitkeep
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Python helper cache
+__pycache__/
+*.pyc
+
+patch/
+*.patch
+
+*.csv

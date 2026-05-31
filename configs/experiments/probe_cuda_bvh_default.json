@@ -1,0 +1,11 @@
+{
+  "executable": "n2wos_probe_cuda_bvh",
+  "mesh": "procedural_bumpy_sphere",
+  "bumpy_stacks": 128,
+  "bumpy_slices": 256,
+  "queries": 262144,
+  "validate": 2048,
+  "repeat": 10,
+  "leaf_size": 8,
+  "output": "results/probe_cuda_bvh.json"
+}
