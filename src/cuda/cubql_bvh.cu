@@ -12,7 +12,8 @@
 #include <vector>
 
 // cuBQL header-only builder/query implementation points.
-// These are exactly the macros used by cuBQL's triangle-mesh distance sample.
+// These are the macros used by cuBQL's triangle-mesh distance sample and
+// expose the concrete CUDA builders selected below.
 #define CUBQL_GPU_BUILDER_IMPLEMENTATION 1
 #define CUBQL_TRIANGLE_CPAT_IMPLEMENTATION 1
 #include <cuBQL/bvh.h>
@@ -51,6 +52,14 @@ Vec3f from_device_vec3(const DeviceVec3& p) {
   return Vec3f{p.x, p.y, p.z};
 }
 
+std::string canonical_build_method(std::string build_method) {
+  if (build_method == "sm" || build_method == "spatial-median") return "spatial_median";
+  if (build_method == "surface_area_heuristic") return "sah";
+  if (build_method == "morton" || build_method == "radix_morton") return "radix";
+  if (build_method == "rebin" || build_method == "robust_radix" || build_method == "modified_radix") return "rebin_radix";
+  return build_method;
+}
+
 std::vector<cuBQL::Triangle> make_cubql_triangles(const Mesh& mesh) {
   require_mesh_valid(mesh);
   std::vector<cuBQL::Triangle> triangles;
@@ -69,7 +78,7 @@ cuBQL::BuildConfig make_build_config(int leaf_size, const std::string& build_met
   }
   cuBQL::BuildConfig config(leaf_size);
   config.maxAllowedLeafSize = leaf_size;
-  if (build_method == "spatial_median") {
+  if (build_method == "spatial_median" || build_method == "radix" || build_method == "rebin_radix") {
     return config;
   }
   if (build_method == "sah") {
@@ -80,7 +89,31 @@ cuBQL::BuildConfig make_build_config(int leaf_size, const std::string& build_met
     config.enableELH();
     return config;
   }
-  throw std::runtime_error("unknown cuBQL build method: " + build_method + " (expected spatial_median, sah, or elh)");
+  throw std::runtime_error("unknown cuBQL build method: " + build_method +
+                           " (expected spatial_median, sah, elh, radix, or rebin_radix)");
+}
+
+void build_cubql_bvh(cuBQL::bvh3f& bvh,
+                     const cuBQL::box3f* d_boxes,
+                     int primitive_count,
+                     const cuBQL::BuildConfig& config,
+                     const std::string& build_method) {
+  if (build_method == "spatial_median" || build_method == "elh") {
+    // gpuBuilder dispatches by BuildConfig::buildMethod. In the default case
+    // this is the adaptive spatial median builder; with enableELH() it uses
+    // cuBQL's experimental edge-length heuristic builder.
+    cuBQL::gpuBuilder(bvh, d_boxes, primitive_count, config);
+  } else if (build_method == "sah") {
+    // Direct call keeps the JSON label unambiguous and avoids relying on an
+    // internal dispatch path.
+    cuBQL::cuda::sahBuilder(bvh, d_boxes, primitive_count, config);
+  } else if (build_method == "radix") {
+    cuBQL::cuda::radixBuilder(bvh, d_boxes, primitive_count, config);
+  } else if (build_method == "rebin_radix") {
+    cuBQL::cuda::rebinRadixBuilder(bvh, d_boxes, primitive_count, config);
+  } else {
+    throw std::runtime_error("unknown cuBQL build method: " + build_method);
+  }
 }
 
 __global__ void generate_cubql_boxes_kernel(cuBQL::box3f* box_for_builder,
@@ -119,6 +152,7 @@ struct CuBqlBvh::Impl {
   cuBQL::bvh3f bvh{};
   std::size_t triangle_count = 0;
   int leaf_size = 8;
+  float build_milliseconds = 0.0f;
   std::string build_method = "spatial_median";
 
   ~Impl() { release(); }
@@ -143,7 +177,7 @@ CuBqlBvh::CuBqlBvh(const Mesh& mesh, int leaf_size, const std::string& build_met
   const std::vector<cuBQL::Triangle> h_triangles = make_cubql_triangles(mesh);
   impl_->triangle_count = h_triangles.size();
   impl_->leaf_size = leaf_size;
-  impl_->build_method = build_method;
+  impl_->build_method = canonical_build_method(build_method);
 
   N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&impl_->d_triangles),
                               h_triangles.size() * sizeof(cuBQL::Triangle)));
@@ -153,20 +187,37 @@ CuBqlBvh::CuBqlBvh(const Mesh& mesh, int leaf_size, const std::string& build_met
                               cudaMemcpyHostToDevice));
 
   cuBQL::box3f* d_boxes = nullptr;
+  cudaEvent_t start = nullptr;
+  cudaEvent_t stop = nullptr;
   try {
     N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_boxes), h_triangles.size() * sizeof(cuBQL::box3f)));
+    N2WOS_CUDA_CHECK(cudaEventCreate(&start));
+    N2WOS_CUDA_CHECK(cudaEventCreate(&stop));
+
     const int n = static_cast<int>(h_triangles.size());
     const int block_size = 256;
     const int grid_size = (n + block_size - 1) / block_size;
+
+    N2WOS_CUDA_CHECK(cudaEventRecord(start));
     generate_cubql_boxes_kernel<<<grid_size, block_size>>>(d_boxes, impl_->d_triangles, n);
     N2WOS_CUDA_CHECK(cudaGetLastError());
-    N2WOS_CUDA_CHECK(cudaDeviceSynchronize());
 
-    cuBQL::BuildConfig config = make_build_config(leaf_size, build_method);
-    cuBQL::gpuBuilder(impl_->bvh, d_boxes, n, config);
-    N2WOS_CUDA_CHECK(cudaDeviceSynchronize());
+    cuBQL::BuildConfig config = make_build_config(leaf_size, impl_->build_method);
+    build_cubql_bvh(impl_->bvh, d_boxes, n, config, impl_->build_method);
+
+    N2WOS_CUDA_CHECK(cudaEventRecord(stop));
+    N2WOS_CUDA_CHECK(cudaEventSynchronize(stop));
+    N2WOS_CUDA_CHECK(cudaEventElapsedTime(&impl_->build_milliseconds, start, stop));
+
+    N2WOS_CUDA_CHECK(cudaEventDestroy(start));
+    start = nullptr;
+    N2WOS_CUDA_CHECK(cudaEventDestroy(stop));
+    stop = nullptr;
     N2WOS_CUDA_CHECK(cudaFree(d_boxes));
+    d_boxes = nullptr;
   } catch (...) {
+    if (start) cudaEventDestroy(start);
+    if (stop) cudaEventDestroy(stop);
     if (d_boxes) cudaFree(d_boxes);
     impl_->release();
     throw;
@@ -240,13 +291,17 @@ CudaBvhQueryResult CuBqlBvh::query(const std::vector<Vec3f>& points, int block_s
     cudaEvent_t stop = nullptr;
     N2WOS_CUDA_CHECK(cudaEventCreate(&start));
     N2WOS_CUDA_CHECK(cudaEventCreate(&stop));
-
-    const int query_count = static_cast<int>(points.size());
     N2WOS_CUDA_CHECK(cudaEventRecord(start));
-    query_device(d_points, query_count, d_distance2, d_closest, d_triangle_id, d_overflow, block_size, 0);
+    query_device(d_points,
+                 static_cast<int>(points.size()),
+                 d_distance2,
+                 d_closest,
+                 d_triangle_id,
+                 d_overflow,
+                 block_size,
+                 0);
     N2WOS_CUDA_CHECK(cudaEventRecord(stop));
     N2WOS_CUDA_CHECK(cudaEventSynchronize(stop));
-
     float milliseconds = 0.0f;
     N2WOS_CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, stop));
     N2WOS_CUDA_CHECK(cudaEventDestroy(start));
@@ -300,6 +355,10 @@ std::size_t CuBqlBvh::prim_id_count() const {
 
 int CuBqlBvh::leaf_size() const {
   return impl_ ? impl_->leaf_size : 0;
+}
+
+float CuBqlBvh::build_milliseconds() const {
+  return impl_ ? impl_->build_milliseconds : 0.0f;
 }
 
 std::string CuBqlBvh::build_method() const {

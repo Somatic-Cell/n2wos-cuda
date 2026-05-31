@@ -1,12 +1,27 @@
 {
   "executable": "n2wos_probe_geometry_backends",
-  "purpose": "Compare the in-tree median BVH against optional NVIDIA cuBQL CUDA closest-point backend. Timings are device query kernel-only and exclude the one-time query upload, result readback, and BVH build.",
-  "default_command_without_cubql": "./build/cuda-release/n2wos_probe_geometry_backends --mesh procedural_bumpy_sphere --bumpy-stacks 128 --bumpy-slices 256 --queries 262144 --validate 2048 --repeat 10 --output results/probe_geometry_backends_custom_only.json",
-  "default_command_with_cubql": "./build/cuda-release/n2wos_probe_geometry_backends --mesh procedural_bumpy_sphere --bumpy-stacks 128 --bumpy-slices 256 --queries 262144 --validate 2048 --repeat 10 --cubql-build-method spatial_median --output results/probe_geometry_backends_cubql.json",
+  "purpose": "Stress-test the in-tree median BVH against optional NVIDIA cuBQL CUDA closest-point backends. Timings are device query kernel-only and exclude the one-time query upload and result readback. cuBQL build time is reported separately.",
+  "default_command_without_cubql": "./build/cuda-release/n2wos_probe_geometry_backends --mesh procedural_bumpy_sphere --bumpy-stacks 128 --bumpy-slices 256 --query-mode wos_like_prefix --queries 262144 --validate 2048 --repeat 10 --output results/probe_geometry_backends_custom_only.json",
+  "default_command_with_cubql_sweep": "./build/cuda-release-cubql/n2wos_probe_geometry_backends --mesh procedural_bumpy_sphere --bumpy-stacks 128 --bumpy-slices 256 --query-mode wos_like_prefix --queries 262144 --validate 2048 --repeat 10 --cubql-build-methods sweep --output results/probe_geometry_backends_cubql_sweep.json",
+  "query_modes": [
+    "uniform_box",
+    "interior_slice",
+    "surface_exact",
+    "near_boundary_shell",
+    "wos_like_prefix"
+  ],
+  "cubql_build_methods": [
+    "spatial_median",
+    "sah",
+    "elh",
+    "radix",
+    "rebin_radix"
+  ],
   "production_backend_policy": {
     "allow_one_time_mesh_upload": true,
     "allow_query_or_walk_step_host_transfer": false,
     "allow_host_vector_public_fcpw_loop": false,
-    "required_for_future_wos": "device pointer query API"
+    "required_for_future_wos": "device pointer query API",
+    "default_selection_rule": "choose the validated cuBQL method with the lowest median device query time on wos_like_prefix or near_boundary_shell; report build time separately"
   }
 }

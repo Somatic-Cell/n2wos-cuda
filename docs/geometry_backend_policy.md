@@ -1,13 +1,13 @@
-# Geometry backend policy after patch 0002
+# Geometry backend policy after patch 0002a
 
 Patch 0001 proved only that the in-tree median-split CUDA BVH can produce plausible closest-point answers on the procedural bumpy sphere. It did not prove equivalence to FCPW, cuBQL, OptiX, or any production-grade geometry library.
 
-Patch 0002 changes the status of geometry backends:
+Patch 0002 introduced NVIDIA/cuBQL as a device-resident candidate. Patch 0002a changes the decision process from "try one cuBQL builder" to "sweep the plausible cuBQL builders under WoS-like query distributions."
 
 | Backend | Intended role | Production timing status |
 |---|---|---|
 | `custom_cuda_bvh` | Comparison / fallback / regression target | Not trusted as the main backend yet |
-| `cubql_cuda` | Primary production candidate | Candidate only when compiled, validated, and benchmarked |
+| `cubql_cuda/<method>` | Primary production candidate family | Candidate only when compiled, validated, and benchmarked |
 | FCPW public `GPUScene` | Reference / non-production baseline if added later | Not allowed in production timing if host-vector I/O remains |
 | OptiX | Not planned for closest-point WoS | Not applicable unless the solver is reformulated |
 
@@ -17,51 +17,100 @@ The production path must expose a device-pointer query interface:
 query_device(d_points, query_count, d_distance2, d_closest, d_triangle_id, d_overflow, block_size, stream)
 ```
 
-This interface is now present for both `custom_cuda_bvh` and, when cuBQL is enabled, `cubql_cuda`. The host-vector `query(...)` wrappers remain only for probes and validation. They are not the intended path for WoS kernels or wavefront stages.
+This interface is present for both `custom_cuda_bvh` and, when cuBQL is enabled, `cubql_cuda/<method>`. Host-vector `query(...)` wrappers remain only for probes and validation. They are not the intended path for WoS kernels or wavefront stages.
 
-## Why cuBQL
+## cuBQL builders to test
 
-NVIDIA/cuBQL is a CUDA BVH build-and-query library. Its README describes GPU-side BVH construction, device-memory BVH output, traversal templates, and closest-surface-point triangle examples. This matches the current requirement better than FCPW public `GPUScene`, whose public C++ API is host-vector oriented.
+cuBQL's `BuildConfig` exposes `SPATIAL_MEDIAN`, `SAH`, and experimental `ELH`. The CUDA builder header also exposes explicit `radixBuilder` and `rebinRadixBuilder` entry points. Patch 0002a supports these names:
 
-Patch 0002 uses the cuBQL triangle closest-point sample path:
-
-```cpp
-#define CUBQL_GPU_BUILDER_IMPLEMENTATION 1
-#define CUBQL_TRIANGLE_CPAT_IMPLEMENTATION 1
-#include <cuBQL/bvh.h>
-#include <cuBQL/queries/triangleData/math/pointToTriangleDistance.h>
-#include <cuBQL/queries/triangleData/closestPointOnAnyTriangle.h>
-
-cuBQL::triangles::CPAT cpat;
-cpat.runQuery(d_triangles, bvh, query_point);
+```text
+spatial_median
+sah
+elh
+radix
+rebin_radix
 ```
 
-## Acceptance criteria before WoS kernels
-
-Before implementing pure WoS on top of a backend, run at least:
+Use:
 
 ```bash
-./build/cuda-release/n2wos_probe_geometry_backends \
+--cubql-build-methods sweep
+```
+
+as shorthand for all five.
+
+Suggested interpretation:
+
+```text
+sah:
+  Highest-quality candidate for a static mesh if it wins query time.
+  Build can be more expensive, but WoS performs many steady-state queries per mesh.
+
+rebin_radix:
+  Preferred robust fast-builder candidate when radix-like ordering is desirable but the primitive distribution may be numerically challenging.
+
+radix:
+  Fast-builder candidate. Keep only if it validates on near-surface and OBJ stress tests.
+
+spatial_median:
+  Simple default/reference candidate. It should remain in every sweep.
+
+elh:
+  Experimental cuBQL heuristic. Keep in sweeps until measured; do not make it the default without evidence.
+```
+
+The production default is not hard-coded by name. Select the validated cuBQL method with the lowest median device query time on `wos_like_prefix` or `near_boundary_shell`. Report build time separately. For static meshes, it is acceptable for `sah` to have a larger one-time build cost if it materially improves query time.
+
+## Query distributions
+
+Patch 0002a adds query modes:
+
+```text
+uniform_box:
+  Original synthetic box distribution.
+
+interior_slice:
+  z=0 slice distribution, closer to dense field evaluation.
+
+near_boundary_shell:
+  Area-weighted surface samples offset by a small distance. This stresses WoS terminal-region closest-point queries.
+
+wos_like_prefix:
+  Synthetic mixture of near-surface shell and slice points. It avoids CPU brute-force WoS generation while approximating the fact that production WoS will spend many queries near the boundary.
+```
+
+The synthetic `wos_like_prefix` distribution is not a production WoS sampler. It is only a geometry stress test before implementing the common WoS / NC / 2LMC engine.
+
+## Minimum acceptance criteria before WoS kernels
+
+Run at least:
+
+```bash
+./build/cuda-release-cubql/n2wos_probe_geometry_backends \
   --mesh procedural_bumpy_sphere \
   --bumpy-stacks 128 \
   --bumpy-slices 256 \
+  --query-mode wos_like_prefix \
   --queries 262144 \
   --validate 2048 \
   --repeat 10 \
-  --output results/probe_geometry_backends_bumpy.json
+  --cubql-build-methods sweep \
+  --output results/probe_geometry_backends_bumpy_woslike_sweep.json
 ```
 
 and, for at least one OBJ mesh:
 
 ```bash
-./build/cuda-release/n2wos_probe_geometry_backends \
+./build/cuda-release-cubql/n2wos_probe_geometry_backends \
   --mesh obj \
   --mesh-path meshes/processed/<mesh>.obj \
   --normalize 1 \
+  --query-mode near_boundary_shell \
   --queries 262144 \
   --validate 2048 \
   --repeat 10 \
-  --output results/probe_geometry_backends_obj.json
+  --cubql-build-methods sweep \
+  --output results/probe_geometry_backends_obj_near_boundary_sweep.json
 ```
 
 Accept only a backend with:

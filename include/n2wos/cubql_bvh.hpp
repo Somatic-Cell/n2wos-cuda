@@ -46,6 +46,7 @@ class CuBqlBvh {
   std::size_t node_count() const;
   std::size_t prim_id_count() const;
   int leaf_size() const;
+  float build_milliseconds() const;
   std::string build_method() const;
 
  private:

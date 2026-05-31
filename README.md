@@ -91,17 +91,19 @@ The probe writes labels intended to prevent accidental promotion of pilot/non-pr
 }
 ```
 
-Patch 0002 should add GPU-resident pure WoS using the same geometry query path.
+Patch 0003 should add a tiny-cuda-nn device-resident cache probe after the geometry backend decision.
 
-## Patch 0002 scope
+## Patch 0002 / 0002a scope
 
-`0002-audit-and-integrate-cubql-geometry.patch` changes the geometry plan:
+`0002-audit-and-integrate-cubql-geometry.patch` and `0002a-geometry-backend-stress-and-cubql-builder-sweep.patch` change the geometry plan:
 
 - The in-tree median-split CUDA BVH from 0001 remains available, but only as `custom_cuda_bvh` comparison/fallback.
 - A device-pointer query API is added to the in-tree backend so future WoS/wavefront code can avoid host transfers.
 - Optional NVIDIA cuBQL integration is added behind `-DN2WOS_ENABLE_CUBQL=ON`.
 - A cuBQL-backed `CuBqlBvh` exposes the same device-pointer closest-point query API.
 - `n2wos_probe_geometry_backends` compares enabled geometry backends under the same query set and timing scope.
+- 0002a adds cuBQL builder sweeps: `spatial_median`, `sah`, `elh`, `radix`, and `rebin_radix`.
+- 0002a adds query distributions: `uniform_box`, `interior_slice`, `near_boundary_shell`, and `wos_like_prefix`.
 - `docs/geometry_backend_policy.md` records the backend policy and acceptance criteria.
 
 The production rule remains: no per-step CPU-GPU transfers, no FCPW public host-vector loop in timing, and no Python/CSV path for geometry or cache inference.
@@ -135,11 +137,12 @@ Without cuBQL, the project still builds and the new probe reports `cubql_cuda` a
   --mesh procedural_bumpy_sphere \
   --bumpy-stacks 128 \
   --bumpy-slices 256 \
+  --query-mode wos_like_prefix \
   --queries 262144 \
   --validate 2048 \
   --repeat 10 \
-  --cubql-build-method spatial_median \
+  --cubql-build-methods sweep \
   --output results/probe_geometry_backends.json
 ```
 
-The timing scope is device query kernel-only. Query points are uploaded once before timing; output is copied back after timing for validation. This is intentionally different from the host-vector probe wrapper and is the interface shape expected for future WoS stages.
+The timing scope is device query kernel-only. Query points are uploaded once before timing; output is copied back after timing for validation. cuBQL build time is reported separately and is not included in steady-state query timings. This is intentionally different from the host-vector probe wrapper and is the interface shape expected for future WoS stages.
