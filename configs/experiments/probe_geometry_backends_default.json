@@ -3,6 +3,7 @@
   "purpose": "Stress-test the in-tree median BVH against optional NVIDIA cuBQL CUDA closest-point backends. Timings are device query kernel-only and exclude the one-time query upload and result readback. cuBQL build time is reported separately.",
   "default_command_without_cubql": "./build/cuda-release/n2wos_probe_geometry_backends --mesh procedural_bumpy_sphere --bumpy-stacks 128 --bumpy-slices 256 --query-mode wos_like_prefix --queries 262144 --validate 2048 --repeat 10 --output results/probe_geometry_backends_custom_only.json",
   "default_command_with_cubql_sweep": "./build/cuda-release-cubql/n2wos_probe_geometry_backends --mesh procedural_bumpy_sphere --bumpy-stacks 128 --bumpy-slices 256 --query-mode wos_like_prefix --queries 262144 --validate 2048 --repeat 10 --cubql-build-methods sweep --output results/probe_geometry_backends_cubql_sweep.json",
+  "example_ply_command_with_cubql_sweep": "./build/cuda-release-cubql/n2wos_probe_geometry_backends --mesh ply --mesh-path meshes/processed/bunny.ply --normalize 1 --query-mode near_boundary_shell --queries 262144 --validate 2048 --repeat 10 --cubql-build-methods sweep --output results/probe_geometry_backends_bunny_ply_near_boundary_sweep.json",
   "query_modes": [
     "uniform_box",
     "interior_slice",

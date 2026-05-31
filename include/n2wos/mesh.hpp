@@ -7,6 +7,7 @@
 namespace n2wos {
 
 Mesh load_obj_mesh(const std::string& path);
+Mesh load_ply_mesh(const std::string& path);
 Mesh make_procedural_bumpy_sphere(int stacks, int slices, float bump_amplitude = 0.15f);
 
 struct NormalizeTransform {

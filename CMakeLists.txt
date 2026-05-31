@@ -22,6 +22,7 @@ endif()
 
 add_library(n2wos_core STATIC
   src/mesh/obj_loader.cpp
+  src/mesh/ply_loader.cpp
   src/mesh/procedural_bumpy_sphere.cpp
   src/mesh/normalize.cpp
   src/geometry/closest_point.cpp)

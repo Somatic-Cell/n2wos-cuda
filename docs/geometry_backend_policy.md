@@ -36,7 +36,7 @@ Use:
 --cubql-build-methods sweep
 ```
 
-as shorthand for all five.
+as shorthand for all currently enabled methods.
 
 Suggested interpretation:
 
@@ -80,6 +80,32 @@ wos_like_prefix:
 
 The synthetic `wos_like_prefix` distribution is not a production WoS sampler. It is only a geometry stress test before implementing the common WoS / NC / 2LMC engine.
 
+
+## Mesh import policy
+
+cuBQL consumes triangle arrays and builds/query BVHs; it does not import mesh files. Patch 0002b adds an in-tree PLY loader for Stanford-style meshes so geometry backend tests can use the same mesh loading path as future WoS / NC / 2LMC executables.
+
+Supported PLY subset:
+
+```text
+ascii 1.0
+binary_little_endian 1.0
+vertex element with scalar x, y, z properties
+face element with a list property such as vertex_indices or vertex_index
+polygonal faces triangulated by a fan
+extra scalar/list properties skipped
+```
+
+Unsupported PLY subset:
+
+```text
+binary_big_endian
+non-face mesh primitives
+per-face holes or non-simple polygons
+```
+
+Assimp remains an option for a later converter tool, but it is intentionally not introduced into the core timing build.
+
 ## Minimum acceptance criteria before WoS kernels
 
 Run at least:
@@ -97,19 +123,19 @@ Run at least:
   --output results/probe_geometry_backends_bumpy_woslike_sweep.json
 ```
 
-and, for at least one OBJ mesh:
+and, for at least one file mesh. PLY is preferred for Stanford-style data:
 
 ```bash
 ./build/cuda-release-cubql/n2wos_probe_geometry_backends \
-  --mesh obj \
-  --mesh-path meshes/processed/<mesh>.obj \
+  --mesh ply \
+  --mesh-path meshes/processed/<mesh>.ply \
   --normalize 1 \
   --query-mode near_boundary_shell \
   --queries 262144 \
   --validate 2048 \
   --repeat 10 \
   --cubql-build-methods sweep \
-  --output results/probe_geometry_backends_obj_near_boundary_sweep.json
+  --output results/probe_geometry_backends_ply_near_boundary_sweep.json
 ```
 
 Accept only a backend with:

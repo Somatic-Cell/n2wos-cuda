@@ -107,11 +107,11 @@ Options parse_options(int argc, char** argv) {
     }
   }
 
-  if (opt.mesh != "procedural_bumpy_sphere" && opt.mesh != "obj") {
-    throw std::runtime_error("--mesh must be procedural_bumpy_sphere or obj");
+  if (opt.mesh != "procedural_bumpy_sphere" && opt.mesh != "obj" && opt.mesh != "ply") {
+    throw std::runtime_error("--mesh must be procedural_bumpy_sphere, obj, or ply");
   }
-  if (opt.mesh == "obj" && opt.mesh_path.empty()) {
-    throw std::runtime_error("--mesh-path is required when --mesh obj");
+  if ((opt.mesh == "obj" || opt.mesh == "ply") && opt.mesh_path.empty()) {
+    throw std::runtime_error("--mesh-path is required when --mesh obj or ply");
   }
   if (opt.queries <= 0) throw std::runtime_error("--queries must be positive");
   if (opt.validate < 0) throw std::runtime_error("--validate must be non-negative");
@@ -331,7 +331,13 @@ int main(int argc, char** argv) {
       transform = n2wos::normalize_to_unit_radius(mesh);
       transform_ptr = &transform;
     } else {
-      mesh = n2wos::load_obj_mesh(opt.mesh_path);
+      if (opt.mesh == "obj") {
+        mesh = n2wos::load_obj_mesh(opt.mesh_path);
+      } else if (opt.mesh == "ply") {
+        mesh = n2wos::load_ply_mesh(opt.mesh_path);
+      } else {
+        throw std::runtime_error("unsupported mesh type after validation: " + opt.mesh);
+      }
       if (opt.normalize != 0) {
         transform = n2wos::normalize_to_unit_radius(mesh);
         transform_ptr = &transform;

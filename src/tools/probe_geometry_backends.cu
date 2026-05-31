@@ -257,11 +257,11 @@ Options parse_options(int argc, char** argv) {
     }
   }
 
-  if (opt.mesh != "procedural_bumpy_sphere" && opt.mesh != "obj") {
-    throw std::runtime_error("--mesh must be procedural_bumpy_sphere or obj");
+  if (opt.mesh != "procedural_bumpy_sphere" && opt.mesh != "obj" && opt.mesh != "ply") {
+    throw std::runtime_error("--mesh must be procedural_bumpy_sphere, obj, or ply");
   }
-  if (opt.mesh == "obj" && opt.mesh_path.empty()) {
-    throw std::runtime_error("--mesh-path is required when --mesh obj");
+  if ((opt.mesh == "obj" || opt.mesh == "ply") && opt.mesh_path.empty()) {
+    throw std::runtime_error("--mesh-path is required when --mesh obj or ply");
   }
   if (opt.cubql_build_methods.empty()) {
     throw std::runtime_error("--cubql-build-methods cannot be empty");
@@ -722,8 +722,8 @@ void write_recommendation_json(std::ostream& out, const std::vector<BackendRun>&
   const BackendRun* best_all = fastest_passing(runs, queries, false);
   out << "  \"recommendation\": {\n";
   out << "    \"selection_policy\": \"choose the fastest validated device-resident production candidate for the tested mesh/query mode; custom_cuda_bvh is excluded until separately revalidated\",\n";
-  out << "    \"preferred_cubql_sweep_order\": [\"sah\", \"rebin_radix\", \"radix\", \"spatial_median\", \"elh_optional\"],\n";
-  out << "    \"default_before_measurement\": \"sah for static meshes when build cost is amortized; rebin_radix as robust fast-builder fallback; do not hard-code spatial_median based only on patch 0002\",\n";
+  out << "    \"preferred_cubql_sweep_order\": [\"sah\", \"radix\", \"spatial_median\", \"elh_optional\"],\n";
+  out << "    \"default_before_measurement\": \"sah for static meshes when build cost is amortized; radix as fast-builder fallback; do not hard-code spatial_median based only on patch 0002\",\n";
   if (best_prod) {
     out << "    \"selected_production_candidate\": " << n2wos::json_quote(best_prod->name) << ",\n";
     out << "    \"selected_median_us_per_query\": " << median_us_per_query(*best_prod, queries) << ",\n";
@@ -862,7 +862,13 @@ int main(int argc, char** argv) {
       transform = n2wos::normalize_to_unit_radius(mesh);
       transform_ptr = &transform;
     } else {
-      mesh = n2wos::load_obj_mesh(opt.mesh_path);
+      if (opt.mesh == "obj") {
+        mesh = n2wos::load_obj_mesh(opt.mesh_path);
+      } else if (opt.mesh == "ply") {
+        mesh = n2wos::load_ply_mesh(opt.mesh_path);
+      } else {
+        throw std::runtime_error("unsupported mesh type after validation: " + opt.mesh);
+      }
       if (opt.normalize != 0) {
         transform = n2wos::normalize_to_unit_radius(mesh);
         transform_ptr = &transform;
@@ -879,6 +885,8 @@ int main(int argc, char** argv) {
     std::cerr << "query_mode=" << opt.query_mode << " query points uploaded once; timed backend queries do not include H2D/D2H transfers\n";
 
     std::vector<BackendRun> runs;
+    n2wos::CudaBvhQueryResult custom_comparison_result;
+    bool has_custom_comparison_result = false;
 
     if (opt.run_custom) {
       std::cerr << "building comparison custom CUDA BVH...\n";
@@ -899,13 +907,14 @@ int main(int argc, char** argv) {
                                                  custom.leaf_size(),
                                                  build_ms);
       custom_run.validation = validate_against_cpu(mesh, query_points, custom_run.result, opt.validate);
+      custom_comparison_result = custom_run.result;
+      has_custom_comparison_result = true;
       runs.push_back(std::move(custom_run));
     }
 
 #ifdef N2WOS_HAS_CUBQL
     if (opt.run_cubql) {
-      const n2wos::CudaBvhQueryResult* comparison = nullptr;
-      if (!runs.empty() && runs.front().name.find("custom_cuda_bvh") == 0) comparison = &runs.front().result;
+      const n2wos::CudaBvhQueryResult* comparison = has_custom_comparison_result ? &custom_comparison_result : nullptr;
       for (int leaf_size : opt.cubql_leaf_sizes) {
         for (const std::string& method : opt.cubql_build_methods) {
           const std::string backend_name = "cubql_cuda_" + method + "_leaf" + std::to_string(leaf_size);

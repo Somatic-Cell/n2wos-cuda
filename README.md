@@ -146,3 +146,8 @@ Without cuBQL, the project still builds and the new probe reports `cubql_cuda` a
 ```
 
 The timing scope is device query kernel-only. Query points are uploaded once before timing; output is copied back after timing for validation. cuBQL build time is reported separately and is not included in steady-state query timings. This is intentionally different from the host-vector probe wrapper and is the interface shape expected for future WoS stages.
+
+
+## Mesh input
+
+Patch 0002b adds a lightweight PLY loader for Stanford-style triangle meshes. Supported formats are ASCII and binary little-endian PLY files with `vertex` x/y/z properties and polygonal `face` vertex index lists. Faces with more than three vertices are triangulated by a fan. Binary big-endian PLY is rejected; convert it before use. OBJ loading remains available for small tests. cuBQL builds and queries BVHs from the loaded triangle mesh, but it does not import mesh files.
