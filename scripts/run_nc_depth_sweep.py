@@ -81,6 +81,7 @@ def build_command(args: argparse.Namespace, depth_m: int, output_json: pathlib.P
         '--cache-preset', args.cache_preset,
         '--train-points', str(args.train_points),
         '--eval-points', str(args.eval_points),
+        '--eval-mode', args.eval_mode,
         '--label-refreshes', str(args.label_refreshes),
         '--walks-per-label-refresh', str(args.walks_per_label_refresh),
         '--train-steps-per-refresh', str(args.train_steps_per_refresh),
@@ -107,6 +108,18 @@ def build_command(args: argparse.Namespace, depth_m: int, output_json: pathlib.P
             '--bumpy-slices', str(args.bumpy_slices),
             '--bumpy-amplitude', str(args.bumpy_amplitude),
         ])
+    if args.eval_mode == 'slice':
+        cmd.extend([
+            '--slice-width', str(args.slice_width),
+            '--slice-height', str(args.slice_height),
+            '--slice-view', args.slice_view,
+            '--slice-plane', str(args.slice_plane),
+            '--slice-padding-fraction', str(args.slice_padding_fraction),
+            '--slice-preserve-world-aspect', '1' if args.slice_preserve_world_aspect else '0',
+            '--slice-output-prefix', str(output_json.with_suffix('')),
+        ])
+        if args.slice_frame:
+            cmd.extend(['--slice-frame', args.slice_frame])
     if args.jit is not None:
         cmd.extend(['--jit', '1' if args.jit else '0'])
     return cmd
@@ -144,6 +157,8 @@ def summarize_one(path: pathlib.Path, depth_m: int) -> Dict[str, Any]:
         'train_steps_per_refresh': as_int(options.get('train_steps_per_refresh')),
         'train_points_padded': as_int(options.get('train_points_padded')),
         'eval_points': as_int(options.get('eval_points')),
+        'eval_mode': options.get('eval_mode', ''),
+        'slice_inside_pixels': as_int((data.get('slice_eval') or {}).get('inside_pixels')) if isinstance(data.get('slice_eval'), dict) else 0,
         'pure_walks_per_point': as_int(options.get('pure_walks_per_point')),
         'hybrid_walks_per_point': as_int(options.get('hybrid_walks_per_point')),
         'coarse_walks_per_point': as_int(options.get('coarse_walks_per_point')),
@@ -207,6 +222,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     p.add_argument('--cache-preset', default='light')
     p.add_argument('--train-points', type=int, default=20000)
     p.add_argument('--eval-points', type=int, default=8192)
+    p.add_argument('--eval-mode', choices=['ball', 'slice'], default='ball')
+    p.add_argument('--slice-width', type=int, default=512)
+    p.add_argument('--slice-height', type=int, default=512)
+    p.add_argument('--slice-view', choices=['xy', 'xz', 'yz'], default='xy')
+    p.add_argument('--slice-plane', type=float, default=0.0)
+    p.add_argument('--slice-frame', default='')
+    p.add_argument('--slice-padding-fraction', type=float, default=0.02)
+    p.add_argument('--slice-preserve-world-aspect', type=int, choices=[0, 1], default=1)
     p.add_argument('--label-refreshes', type=int, default=4)
     p.add_argument('--walks-per-label-refresh', type=int, default=16)
     p.add_argument('--train-steps-per-refresh', type=int, default=50)

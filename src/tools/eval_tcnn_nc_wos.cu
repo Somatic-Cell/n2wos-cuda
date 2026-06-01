@@ -50,6 +50,19 @@ struct Options {
   n2wos::NcLabelSource label_source = n2wos::NcLabelSource::WosSupervision;
   int train_points = 20000;
   int eval_points = 8192;
+  std::string eval_mode = "ball";
+  int slice_width = 512;
+  int slice_height = 512;
+  std::string slice_view = "xy";
+  float slice_plane = 0.0f;
+  bool slice_use_mesh_bounds = true;
+  bool slice_preserve_world_aspect = true;
+  float slice_u_min = -1.0f;
+  float slice_u_max = 1.0f;
+  float slice_v_min = -1.0f;
+  float slice_v_max = 1.0f;
+  float slice_padding_fraction = 0.02f;
+  std::string slice_output_prefix;
   int label_refreshes = 4;
   int walks_per_label_refresh = 16;
   int train_steps_per_refresh = 1000;
@@ -127,6 +140,17 @@ std::string require_value(int& i, int argc, char** argv) {
   return argv[++i];
 }
 
+std::vector<float> parse_float_list4(const std::string& text, const std::string& name) {
+  std::stringstream ss(text);
+  std::string token;
+  std::vector<float> values;
+  while (std::getline(ss, token, ',')) {
+    if (!token.empty()) values.push_back(std::stof(token));
+  }
+  if (values.size() != 4) throw std::runtime_error(name + " expects four comma-separated values");
+  return values;
+}
+
 void apply_cache_preset(Options& o, const std::string& preset) {
   o.cache_preset = preset;
   if (preset == "baseline" || preset == "paper_like") {
@@ -175,6 +199,15 @@ Options parse(int argc, char** argv) {
     else if (a == "--cache-preset") apply_cache_preset(o, require_value(i,argc,argv));
     else if (a == "--train-points") o.train_points = std::stoi(require_value(i,argc,argv));
     else if (a == "--eval-points") o.eval_points = std::stoi(require_value(i,argc,argv));
+    else if (a == "--eval-mode" || a == "--eval-sampler") { o.eval_mode = require_value(i,argc,argv); if (o.eval_mode != "ball" && o.eval_mode != "slice") throw std::runtime_error("--eval-mode must be ball or slice"); }
+    else if (a == "--slice-width") o.slice_width = std::stoi(require_value(i,argc,argv));
+    else if (a == "--slice-height") o.slice_height = std::stoi(require_value(i,argc,argv));
+    else if (a == "--slice-view") { o.slice_view = require_value(i,argc,argv); if (o.slice_view != "xy" && o.slice_view != "xz" && o.slice_view != "yz") throw std::runtime_error("--slice-view must be xy, xz, or yz"); }
+    else if (a == "--slice-plane") o.slice_plane = std::stof(require_value(i,argc,argv));
+    else if (a == "--slice-frame") { auto f = parse_float_list4(require_value(i,argc,argv), "--slice-frame"); o.slice_u_min=f[0]; o.slice_u_max=f[1]; o.slice_v_min=f[2]; o.slice_v_max=f[3]; o.slice_use_mesh_bounds=false; }
+    else if (a == "--slice-padding-fraction") o.slice_padding_fraction = std::stof(require_value(i,argc,argv));
+    else if (a == "--slice-preserve-world-aspect") o.slice_preserve_world_aspect = std::stoi(require_value(i,argc,argv)) != 0;
+    else if (a == "--slice-output-prefix") o.slice_output_prefix = require_value(i,argc,argv);
     else if (a == "--label-refreshes") o.label_refreshes = std::stoi(require_value(i,argc,argv));
     else if (a == "--walks-per-label-refresh") o.walks_per_label_refresh = std::stoi(require_value(i,argc,argv));
     else if (a == "--train-steps-per-refresh") o.train_steps_per_refresh = std::stoi(require_value(i,argc,argv));
@@ -203,6 +236,7 @@ Options parse(int argc, char** argv) {
     else throw std::runtime_error("unknown argument: " + a);
   }
   if (o.train_points <= 0 || o.eval_points <= 0 || o.pure_walks_per_point <= 0 || o.hybrid_walks_per_point <= 0) throw std::runtime_error("invalid sample counts");
+  if (o.eval_mode == "slice" && (o.slice_width <= 0 || o.slice_height <= 0)) throw std::runtime_error("invalid slice dimensions");
   if (o.coarse_walks_per_point <= 0 || o.residual_walks_per_point <= 0) throw std::runtime_error("invalid 2LMC sample counts");
   if (o.label_refreshes <= 0 || o.walks_per_label_refresh <= 0 || o.train_steps_per_refresh < 0) throw std::runtime_error("invalid training schedule");
   if (o.depth_m < 0 || o.max_steps <= 0 || !(o.epsilon > 0.0f)) throw std::runtime_error("invalid WoS options");
@@ -242,6 +276,22 @@ std::vector<n2wos::DeviceVec3> make_ball_points(int n, const n2wos::Aabb& bounds
   for (int i=0;i<n;++i) { const float z=1.0f-2.0f*u(rng); const float phi=6.283185307179586f*u(rng); const float rr=radius*std::cbrt(std::max(0.0f,u(rng))); const float s=std::sqrt(std::max(0.0f,1.0f-z*z)); pts.push_back({center.x+rr*s*std::cos(phi), center.y+rr*s*std::sin(phi), center.z+rr*z}); }
   return pts;
 }
+
+struct RayTri { n2wos::Vec3f a, b, c; };
+struct SliceAxes { int u_axis; int v_axis; int fixed_axis; };
+struct SliceEvalSet { std::vector<n2wos::DeviceVec3> points; std::vector<std::uint8_t> mask; int width=0, height=0, candidate_pixels=0, inside_pixels=0; float u_min=0, u_max=0, v_min=0, v_max=0; std::string mask_ppm; std::string points_csv; };
+SliceAxes slice_axes_for_view(const std::string& view) { if(view=="xy") return {0,1,2}; if(view=="xz") return {0,2,1}; if(view=="yz") return {1,2,0}; throw std::runtime_error("slice view must be xy, xz, or yz"); }
+float axis_value(const n2wos::Vec3f& p, int axis) { return axis==0?p.x:(axis==1?p.y:p.z); }
+n2wos::Vec3f make_slice_point(const SliceAxes& axes, float u, float v, float fixed) { n2wos::Vec3f p{0,0,0}; if(axes.u_axis==0)p.x=u; else if(axes.u_axis==1)p.y=u; else p.z=u; if(axes.v_axis==0)p.x=v; else if(axes.v_axis==1)p.y=v; else p.z=v; if(axes.fixed_axis==0)p.x=fixed; else if(axes.fixed_axis==1)p.y=fixed; else p.z=fixed; return p; }
+void expand_frame_to_preserve_pixel_aspect(float& u_min,float& u_max,float& v_min,float& v_max,int width,int height){ const float du=u_max-u_min,dv=v_max-v_min; if(!(du>0)||!(dv>0)||width<=0||height<=0) return; const float target=float(width)/float(height), cur=du/dv; if(cur<target){ const float nd=target*dv,c=0.5f*(u_min+u_max); u_min=c-0.5f*nd; u_max=c+0.5f*nd; } else if(cur>target){ const float nd=du/target,c=0.5f*(v_min+v_max); v_min=c-0.5f*nd; v_max=c+0.5f*nd; } }
+std::vector<RayTri> make_ray_tris(const n2wos::Mesh& mesh){ std::vector<RayTri> tris; tris.reserve(mesh.triangles.size()); for(const auto& tri:mesh.triangles) tris.push_back({mesh.vertices[tri.v0],mesh.vertices[tri.v1],mesh.vertices[tri.v2]}); return tris; }
+bool ray_x_intersects_triangle(const n2wos::Vec3f& p,const RayTri& tri){ const float eps=1.0e-8f; const n2wos::Vec3f dir{1,0,0}; const auto e1=tri.b-tri.a,e2=tri.c-tri.a; const auto h=n2wos::cross(dir,e2); const float det=n2wos::dot(e1,h); if(std::fabs(det)<eps) return false; const float inv=1.0f/det; const auto s=p-tri.a; const float u=inv*n2wos::dot(s,h); if(u<-eps||u>1.0f+eps) return false; const auto q=n2wos::cross(s,e1); const float v=inv*n2wos::dot(dir,q); if(v<-eps||u+v>1.0f+eps) return false; const float t=inv*n2wos::dot(e2,q); return t>eps; }
+bool point_inside_closed_mesh_ray_x(const n2wos::Vec3f& p,const std::vector<RayTri>& tris){ const n2wos::Vec3f q{p.x,p.y+1.928371e-6f,p.z+3.141593e-6f}; int hits=0; for(const auto& tri:tris) if(ray_x_intersects_triangle(q,tri)) ++hits; return (hits&1)!=0; }
+SliceEvalSet make_slice_eval_points(const Options& opt,const n2wos::Mesh& mesh,const n2wos::Aabb& bounds){ SliceEvalSet out; out.width=opt.slice_width; out.height=opt.slice_height; out.candidate_pixels=out.width*out.height; out.mask.assign(std::size_t(out.candidate_pixels),0); const auto axes=slice_axes_for_view(opt.slice_view); float u_min=opt.slice_u_min,u_max=opt.slice_u_max,v_min=opt.slice_v_min,v_max=opt.slice_v_max; if(opt.slice_use_mesh_bounds){ const float bu_min=axis_value(bounds.min,axes.u_axis), bu_max=axis_value(bounds.max,axes.u_axis), bv_min=axis_value(bounds.min,axes.v_axis), bv_max=axis_value(bounds.max,axes.v_axis); const float du=bu_max-bu_min,dv=bv_max-bv_min; u_min=bu_min-opt.slice_padding_fraction*du; u_max=bu_max+opt.slice_padding_fraction*du; v_min=bv_min-opt.slice_padding_fraction*dv; v_max=bv_max+opt.slice_padding_fraction*dv; } if(opt.slice_preserve_world_aspect) expand_frame_to_preserve_pixel_aspect(u_min,u_max,v_min,v_max,out.width,out.height); if(!(u_max>u_min)||!(v_max>v_min)) throw std::runtime_error("invalid slice frame"); out.u_min=u_min; out.u_max=u_max; out.v_min=v_min; out.v_max=v_max; const auto tris=make_ray_tris(mesh); out.points.reserve(std::size_t(out.candidate_pixels)); for(int iy=0;iy<out.height;++iy){ const float v=out.height==1?0.5f*(v_min+v_max):v_min+(v_max-v_min)*float(iy)/float(out.height-1); for(int ix=0;ix<out.width;++ix){ const float u=out.width==1?0.5f*(u_min+u_max):u_min+(u_max-u_min)*float(ix)/float(out.width-1); const int pid=iy*out.width+ix; const auto p=make_slice_point(axes,u,v,opt.slice_plane); if(point_inside_closed_mesh_ray_x(p,tris)){ out.mask[std::size_t(pid)]=1; out.points.push_back({p.x,p.y,p.z}); } } } out.inside_pixels=int(out.points.size()); if(out.inside_pixels==0) throw std::runtime_error("slice contains no interior pixels; adjust --slice-view, --slice-plane, or --slice-frame"); return out; }
+std::string default_slice_prefix(const Options& opt){ if(!opt.slice_output_prefix.empty()) return opt.slice_output_prefix; std::filesystem::path p(opt.output); if(p.extension()==".json") p.replace_extension(""); return p.string()+"_slice"; }
+void write_slice_mask_ppm(const std::string& prefix,const SliceEvalSet& slice){ if(prefix.empty()) return; const std::filesystem::path out_path(prefix+"_mask.ppm"); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(out_path,std::ios::binary); if(!out) throw std::runtime_error("failed to open slice mask for writing: "+out_path.string()); out<<"P6\n"<<slice.width<<" "<<slice.height<<"\n255\n"; for(int iy=0;iy<slice.height;++iy){ const int sy=slice.height-1-iy; for(int ix=0;ix<slice.width;++ix){ const bool inside=slice.mask[std::size_t(sy*slice.width+ix)]!=0; const unsigned char c=inside?235:20; out.put(char(c)); out.put(char(c)); out.put(char(c)); } } }
+void write_slice_points_csv(const std::string& prefix,const SliceEvalSet& slice){ if(prefix.empty()) return; const std::filesystem::path out_path(prefix+"_points.csv"); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(out_path); if(!out) throw std::runtime_error("failed to open slice points CSV for writing: "+out_path.string()); out<<"point_id,x,y,z\n"<<std::setprecision(10); for(std::size_t i=0;i<slice.points.size();++i){ const auto& p=slice.points[i]; out<<i<<','<<p.x<<','<<p.y<<','<<p.z<<'\n'; } }
+
 
 n2wos::Vec3f input_min(const n2wos::Aabb& b) { const float pad=0.05f; return {b.min.x-pad*(b.max.x-b.min.x), b.min.y-pad*(b.max.y-b.min.y), b.min.z-pad*(b.max.z-b.min.z)}; }
 n2wos::Vec3f input_extent(const n2wos::Aabb& b) { const float pad=0.05f; return {(b.max.x-b.min.x)*(1+2*pad), (b.max.y-b.min.y)*(1+2*pad), (b.max.z-b.min.z)*(1+2*pad)}; }
@@ -363,11 +413,23 @@ int main(int argc, char** argv) {
     n2wos::Mesh mesh=load_mesh(opt); n2wos::NormalizeTransform norm{}; if(opt.normalize) norm=n2wos::normalize_to_unit_radius(mesh); const n2wos::Aabb bounds=n2wos::compute_bounds(mesh); const int deg=count_degenerate(mesh);
     n2wos::CuBqlBvh bvh(mesh,opt.cubql_leaf_size,opt.cubql_build_method);
     const int train_count=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(opt.train_points), tcnn::BATCH_SIZE_GRANULARITY));
-    const int hybrid_samples=opt.eval_points*opt.hybrid_walks_per_point; const int hybrid_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(hybrid_samples), tcnn::BATCH_SIZE_GRANULARITY));
-    const int coarse_samples=opt.eval_points*opt.coarse_walks_per_point; const int coarse_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(coarse_samples), tcnn::BATCH_SIZE_GRANULARITY));
-    const int residual_samples=opt.eval_points*opt.residual_walks_per_point; const int residual_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(residual_samples), tcnn::BATCH_SIZE_GRANULARITY));
+    SliceEvalSet slice_eval;
+    std::vector<n2wos::DeviceVec3> eval_points;
+    std::string slice_prefix;
+    if (opt.eval_mode == "slice") {
+      slice_eval = make_slice_eval_points(opt, mesh, bounds);
+      eval_points = slice_eval.points;
+      slice_prefix = default_slice_prefix(opt);
+      write_slice_mask_ppm(slice_prefix, slice_eval);
+      write_slice_points_csv(slice_prefix, slice_eval);
+    } else {
+      eval_points = make_ball_points(opt.eval_points,bounds,static_cast<std::uint64_t>(opt.seed)^0x8da6b343ull);
+    }
+    const int eval_count=static_cast<int>(eval_points.size());
+    const int hybrid_samples=eval_count*opt.hybrid_walks_per_point; const int hybrid_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(hybrid_samples), tcnn::BATCH_SIZE_GRANULARITY));
+    const int coarse_samples=eval_count*opt.coarse_walks_per_point; const int coarse_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(coarse_samples), tcnn::BATCH_SIZE_GRANULARITY));
+    const int residual_samples=eval_count*opt.residual_walks_per_point; const int residual_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(residual_samples), tcnn::BATCH_SIZE_GRANULARITY));
     const std::vector<n2wos::DeviceVec3> train_points=make_ball_points(train_count,bounds,static_cast<std::uint64_t>(opt.seed));
-    const std::vector<n2wos::DeviceVec3> eval_points=make_ball_points(opt.eval_points,bounds,static_cast<std::uint64_t>(opt.seed)^0x8da6b343ull);
     const n2wos::Vec3f in_min=input_min(bounds), in_extent=input_extent(bounds);
 
     cudaStream_t stream{}; N2WOS_CUDA_CHECK(cudaStreamCreate(&stream)); Timer timer;
@@ -386,9 +448,9 @@ int main(int argc, char** argv) {
     n2wos::NcDeviceDatasetOptions ds; ds.d_world_points=d_train; ds.point_count=train_count; ds.walks_per_point=opt.walks_per_label_refresh; ds.max_steps=opt.max_steps; ds.epsilon=opt.epsilon; ds.step_scale=opt.step_scale; ds.seed=opt.seed; ds.boundary_mode=opt.boundary_mode; ds.label_source=opt.label_source; ds.input_min=in_min; ds.input_extent=in_extent; ds.block_size=opt.block_size;
     float label_ms=0, train_ms=0; for(int r=0;r<opt.label_refreshes;++r){ ds.refresh_index=r; timer.begin(stream); n2wos::launch_nc_update_labels(bvh,ds,train_inputs.data(),train_targets.data(),d_counts,stream); label_ms += timer.end(stream); timer.begin(stream); for(int s=0;s<opt.train_steps_per_refresh;++s){ auto ctx=trainer->training_step(stream,train_inputs,train_targets); (void)ctx; } train_ms += timer.end(stream); }
 
-    const int pure_samples=opt.eval_points*opt.pure_walks_per_point; float *d_pure=nullptr,*d_boundary=nullptr,*d_nc_values=nullptr,*d_dummy_residual=nullptr; int *d_pure_steps=nullptr,*d_pure_forced=nullptr,*d_pure_over=nullptr,*d_h_steps=nullptr,*d_h_forced=nullptr,*d_h_over=nullptr; unsigned char* d_need=nullptr;
+    const int pure_samples=eval_count*opt.pure_walks_per_point; float *d_pure=nullptr,*d_boundary=nullptr,*d_nc_values=nullptr,*d_dummy_residual=nullptr; int *d_pure_steps=nullptr,*d_pure_forced=nullptr,*d_pure_over=nullptr,*d_h_steps=nullptr,*d_h_forced=nullptr,*d_h_over=nullptr; unsigned char* d_need=nullptr;
     N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure,sizeof(float)*pure_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure_steps,sizeof(int)*pure_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure_forced,sizeof(int)*pure_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure_over,sizeof(int)*pure_samples));
-    n2wos::NcDeviceSampleOptions so; so.d_eval_points=d_eval; so.eval_point_count=opt.eval_points; so.walks_per_point=opt.pure_walks_per_point; so.max_steps=opt.max_steps; so.epsilon=opt.epsilon; so.step_scale=opt.step_scale; so.seed=static_cast<std::uint64_t>(opt.seed)^0x44d2a123ull; so.boundary_mode=opt.boundary_mode; so.input_min=in_min; so.input_extent=in_extent; so.block_size=opt.block_size;
+    n2wos::NcDeviceSampleOptions so; so.d_eval_points=d_eval; so.eval_point_count=eval_count; so.walks_per_point=opt.pure_walks_per_point; so.max_steps=opt.max_steps; so.epsilon=opt.epsilon; so.step_scale=opt.step_scale; so.seed=static_cast<std::uint64_t>(opt.seed)^0x44d2a123ull; so.boundary_mode=opt.boundary_mode; so.input_min=in_min; so.input_extent=in_extent; so.block_size=opt.block_size;
     timer.begin(stream); n2wos::launch_nc_pure_wos_samples(bvh,so,d_pure,d_pure_steps,d_pure_forced,d_pure_over,stream); const float pure_ms=timer.end(stream);
 
     N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_boundary,sizeof(float)*hybrid_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_need,sizeof(unsigned char)*hybrid_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_h_steps,sizeof(int)*hybrid_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_h_forced,sizeof(int)*hybrid_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_h_over,sizeof(int)*hybrid_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_nc_values,sizeof(float)*hybrid_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_dummy_residual,sizeof(float)*hybrid_samples));
@@ -423,15 +485,31 @@ int main(int argc, char** argv) {
     TwoLevelStats tl; if (opt.enable_2lmc) tl=summarize_two_level(h_c_values,h_r_values,h_cs,h_rs,h_cf,h_rf,h_co,h_ro,h_c_need,h_r_need,eval_points,opt.coarse_walks_per_point,opt.residual_walks_per_point,opt.boundary_mode);
 
     std::filesystem::path out_path(opt.output); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(opt.output); if(!out) throw std::runtime_error("failed to open output: "+opt.output); out << std::setprecision(9);
-    out << "{\n  \"schema\": \"n2wos_tcnn_nc_wos_eval_v3\",\n  \"patch\": \"0008-extend-tcnn-nc-2lmc-depth-sweep\",\n  \"generated_at_utc\": " << n2wos::json_quote(now_utc()) << ",\n  \"command_line\": " << n2wos::json_quote(cmd) << ",\n  \"cuda\": " << cuda_json() << ",\n  \"implementation_mode\": {\n    \"solver\": \"neural_cache_wos_and_nc_2lmc_depth_sweep_screening\",\n    \"geometry_backend\": \"cubql_cuda\",\n    \"cache_backend\": \"tiny-cuda-nn_native_cpp\",\n    \"training_schedule\": \"fixed_refresh_count_and_fixed_train_steps\",\n    \"training_labels\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"host_transfer_between_prefix_and_tcnn\": false,\n    \"host_transfer_between_tcnn_and_residual_consumer\": false,\n    \"csv_postprocess\": false,\n    \"python_bindings\": false,\n    \"nc_wos_biased\": true,\n    \"nc_2lmc_correction_enabled\": " << (opt.enable_2lmc?"true":"false") << ",\n    \"nc_and_2lmc_share_depth_m\": true,\n    \"point_sampler\": \"inscribed_ball_screening_sampler\",\n    \"production_status\": \"screening_diagnostic_not_final_wall_clock\"\n  },\n";
-    out << "  \"options\": {\n    \"mesh\": " << n2wos::json_quote(opt.mesh) << ",\n    \"mesh_path\": " << n2wos::json_quote(opt.mesh_path) << ",\n    \"boundary_condition\": " << n2wos::json_quote(n2wos::nc_boundary_mode_name(opt.boundary_mode)) << ",\n    \"label_source\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"train_points_requested\": " << opt.train_points << ",\n    \"train_points_padded\": " << train_count << ",\n    \"eval_points\": " << opt.eval_points << ",\n    \"label_refreshes\": " << opt.label_refreshes << ",\n    \"walks_per_label_refresh\": " << opt.walks_per_label_refresh << ",\n    \"train_steps_per_refresh\": " << opt.train_steps_per_refresh << ",\n    \"pure_walks_per_point\": " << opt.pure_walks_per_point << ",\n    \"hybrid_walks_per_point\": " << opt.hybrid_walks_per_point << ",\n    \"coarse_walks_per_point\": " << opt.coarse_walks_per_point << ",\n    \"residual_walks_per_point\": " << opt.residual_walks_per_point << ",\n    \"depth_m\": " << opt.depth_m << ",\n    \"max_steps\": " << opt.max_steps << ",\n    \"epsilon\": " << opt.epsilon << ",\n    \"cache_preset\": " << n2wos::json_quote(opt.cache_preset) << ",\n    \"network\": " << n2wos::json_quote(opt.network) << ",\n    \"n_levels\": " << opt.n_levels << ",\n    \"n_features_per_level\": " << opt.n_features_per_level << ",\n    \"log2_hashmap_size\": " << opt.log2_hashmap_size << ",\n    \"base_resolution\": " << opt.base_resolution << ",\n    \"per_level_scale\": " << opt.per_level_scale << ",\n    \"n_neurons\": " << opt.n_neurons << ",\n    \"n_hidden_layers\": " << opt.n_hidden_layers << ",\n    \"jit_requested\": " << (opt.jit?"true":"false") << ",\n    \"jit_supported\": " << (jit_supported?"true":"false") << ",\n    \"jit_enabled\": " << (network->jit_fusion()?"true":"false") << "\n  },\n";
+    out << "{\n  \"schema\": \"n2wos_tcnn_nc_wos_eval_v4\",\n  \"patch\": \"0009-add-slice-eval-sampler\",\n  \"generated_at_utc\": " << n2wos::json_quote(now_utc()) << ",\n  \"command_line\": " << n2wos::json_quote(cmd) << ",\n  \"cuda\": " << cuda_json() << ",\n  \"implementation_mode\": {\n    \"solver\": \"neural_cache_wos_and_nc_2lmc_depth_sweep_screening\",\n    \"geometry_backend\": \"cubql_cuda\",\n    \"cache_backend\": \"tiny-cuda-nn_native_cpp\",\n    \"training_schedule\": \"fixed_refresh_count_and_fixed_train_steps\",\n    \"training_labels\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"host_transfer_between_prefix_and_tcnn\": false,\n    \"host_transfer_between_tcnn_and_residual_consumer\": false,\n    \"csv_postprocess\": false,\n    \"python_bindings\": false,\n    \"nc_wos_biased\": true,\n    \"nc_2lmc_correction_enabled\": " << (opt.enable_2lmc?"true":"false") << ",\n    \"nc_and_2lmc_share_depth_m\": true,\n    \"point_sampler\": " << n2wos::json_quote(opt.eval_mode == "slice" ? "fixed_slice_interior_pixels" : "inscribed_ball_screening_sampler") << ",\n    \"production_status\": \"screening_diagnostic_not_final_wall_clock\"\n  },\n";
+    out << "  \"options\": {\n    \"mesh\": " << n2wos::json_quote(opt.mesh) << ",\n    \"mesh_path\": " << n2wos::json_quote(opt.mesh_path) << ",\n    \"boundary_condition\": " << n2wos::json_quote(n2wos::nc_boundary_mode_name(opt.boundary_mode)) << ",\n    \"label_source\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"train_points_requested\": " << opt.train_points << ",\n    \"train_points_padded\": " << train_count << ",\n    \"eval_points_requested\": " << opt.eval_points << ",\n    \"eval_points\": " << eval_count << ",\n    \"eval_mode\": " << n2wos::json_quote(opt.eval_mode) << ",\n    \"label_refreshes\": " << opt.label_refreshes << ",\n    \"walks_per_label_refresh\": " << opt.walks_per_label_refresh << ",\n    \"train_steps_per_refresh\": " << opt.train_steps_per_refresh << ",\n    \"pure_walks_per_point\": " << opt.pure_walks_per_point << ",\n    \"hybrid_walks_per_point\": " << opt.hybrid_walks_per_point << ",\n    \"coarse_walks_per_point\": " << opt.coarse_walks_per_point << ",\n    \"residual_walks_per_point\": " << opt.residual_walks_per_point << ",\n    \"depth_m\": " << opt.depth_m << ",\n    \"max_steps\": " << opt.max_steps << ",\n    \"epsilon\": " << opt.epsilon << ",\n    \"cache_preset\": " << n2wos::json_quote(opt.cache_preset) << ",\n    \"network\": " << n2wos::json_quote(opt.network) << ",\n    \"n_levels\": " << opt.n_levels << ",\n    \"n_features_per_level\": " << opt.n_features_per_level << ",\n    \"log2_hashmap_size\": " << opt.log2_hashmap_size << ",\n    \"base_resolution\": " << opt.base_resolution << ",\n    \"per_level_scale\": " << opt.per_level_scale << ",\n    \"n_neurons\": " << opt.n_neurons << ",\n    \"n_hidden_layers\": " << opt.n_hidden_layers << ",\n    \"jit_requested\": " << (opt.jit?"true":"false") << ",\n    \"jit_supported\": " << (jit_supported?"true":"false") << ",\n    \"jit_enabled\": " << (network->jit_fusion()?"true":"false") << "\n  },\n";
+    if (opt.eval_mode == "slice") {
+      out << "  \"slice_eval\": {\n"
+          << "    \"width\": " << slice_eval.width << ",\n"
+          << "    \"height\": " << slice_eval.height << ",\n"
+          << "    \"candidate_pixels\": " << slice_eval.candidate_pixels << ",\n"
+          << "    \"inside_pixels\": " << slice_eval.inside_pixels << ",\n"
+          << "    \"view\": " << n2wos::json_quote(opt.slice_view) << ",\n"
+          << "    \"plane\": " << opt.slice_plane << ",\n"
+          << "    \"frame_u_min\": " << slice_eval.u_min << ",\n"
+          << "    \"frame_u_max\": " << slice_eval.u_max << ",\n"
+          << "    \"frame_v_min\": " << slice_eval.v_min << ",\n"
+          << "    \"frame_v_max\": " << slice_eval.v_max << ",\n"
+          << "    \"mask_ppm\": " << n2wos::json_quote(slice_prefix + "_mask.ppm") << ",\n"
+          << "    \"points_csv\": " << n2wos::json_quote(slice_prefix + "_points.csv") << "\n"
+          << "  },\n";
+    }
     out << "  \"mesh_stats\": {\n    \"name\": " << n2wos::json_quote(mesh.name) << ",\n    \"vertices\": " << mesh.vertices.size() << ",\n    \"triangles\": " << mesh.triangles.size() << ",\n    \"degenerate_triangles\": " << deg << ",\n    \"bounds_min\": [" << bounds.min.x << ", " << bounds.min.y << ", " << bounds.min.z << "],\n    \"bounds_max\": [" << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z << "],\n    \"normalization\": {\"center\": [" << norm.center.x << ", " << norm.center.y << ", " << norm.center.z << "], \"scale\": " << norm.scale << "}\n  },\n";
     out << "  \"bvh_stats\": {\n    \"triangles\": " << bvh.triangle_count() << ",\n    \"nodes\": " << bvh.node_count() << ",\n    \"prim_ids\": " << bvh.prim_id_count() << ",\n    \"leaf_size\": " << bvh.leaf_size() << ",\n    \"build_method\": " << n2wos::json_quote(bvh.build_method()) << ",\n    \"build_milliseconds\": " << bvh.build_milliseconds() << "\n  },\n";
     out << "  \"training\": {\n    \"label_update_ms\": " << label_ms << ",\n    \"tcnn_training_ms\": " << train_ms << ",\n    \"total_training_ms\": " << (label_ms+train_ms) << ",\n    \"host_readback_in_training_loop\": false\n  },\n";
-    out << "  \"runs\": {\n    \"pure_wos\": " << stats_json(pure,opt.eval_points,opt.pure_walks_per_point,pure_ms) << ",\n    \"nc_wos\": " << stats_json(hybrid,opt.eval_points,opt.hybrid_walks_per_point,hybrid_ms,label_ms+train_ms);
+    out << "  \"runs\": {\n    \"pure_wos\": " << stats_json(pure,eval_count,opt.pure_walks_per_point,pure_ms) << ",\n    \"nc_wos\": " << stats_json(hybrid,eval_count,opt.hybrid_walks_per_point,hybrid_ms,label_ms+train_ms);
     if (opt.enable_2lmc) {
       const std::string depth_key = "nc_2lmc_m" + std::to_string(opt.depth_m);
-      const std::string two_json = two_level_json(tl,opt.eval_points,opt.coarse_walks_per_point,opt.residual_walks_per_point,coarse_ms,residual_ms,label_ms+train_ms);
+      const std::string two_json = two_level_json(tl,eval_count,opt.coarse_walks_per_point,opt.residual_walks_per_point,coarse_ms,residual_ms,label_ms+train_ms);
       out << ",\n    \"nc_2lmc\": " << two_json << ",\n    \"" << depth_key << "\": " << two_json;
     }
     out << "\n  },\n";

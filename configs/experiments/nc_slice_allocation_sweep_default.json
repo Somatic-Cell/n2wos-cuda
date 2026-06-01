@@ -1,0 +1,33 @@
+{
+  "description": "Fixed 512x512 slice allocation sweep for NC+2LMC. Varies coarse/residual walks-per-point and optionally train point count.",
+  "mesh": "procedural_bumpy_sphere",
+  "boundary": "external_charges_medium",
+  "cache_preset": "nano",
+  "label_source": "wos_supervision",
+  "train_points_list": [20000],
+  "label_refreshes": 4,
+  "walks_per_label_refresh": 16,
+  "train_steps_per_refresh": 50,
+  "depth_m": 4,
+  "slice": {
+    "width": 512,
+    "height": 512,
+    "view": "xy",
+    "plane": 0.0,
+    "padding_fraction": 0.02,
+    "preserve_world_aspect": true
+  },
+  "pure_walks_per_point": 64,
+  "hybrid_walks_per_point": 4,
+  "allocations": [
+    [32, 16],
+    [32, 32],
+    [64, 16],
+    [64, 32]
+  ],
+  "assumed_block_size_for_launch_audit": 128,
+  "notes": [
+    "Use this before broadening mesh or boundary condition sweeps.",
+    "The static launch audit checks warp/block divisibility and tail-thread overhead; use Nsight Compute for real occupancy."
+  ]
+}

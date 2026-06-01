@@ -1,0 +1,10 @@
+{
+  "schema": "n2wos_progressive_snapshot_accounting_config_v1",
+  "purpose": "Estimate serial vs overlapped accounting for progressive NC+2LMC snapshots.",
+  "recommended_command": "python3 scripts/run_progressive_snapshot_accounting.py --executable ./build/cuda-release-cubql-tcnn/n2wos_eval_tcnn_nc_wos --output-dir results/progressive_snapshot_bumpy_nano_medium_m4 --mesh procedural_bumpy_sphere --boundary external_charges_medium --label-source wos_supervision --cache-preset nano --train-points 20000 --eval-mode slice --slice-width 512 --slice-height 512 --slice-view xy --slice-plane 0 --snapshot-train-steps-per-refresh-list 0,50,100,250 --depth-m 4 --pure-walks-per-point 64 --hybrid-walks-per-point 4 --coarse-walks-per-point 64 --residual-walks-per-point 32 --cubql-build-method sah",
+  "limitations": [
+    "This is an accounting runner, not a same-process CUDA stream overlap implementation.",
+    "Each snapshot is measured by an independent executable invocation.",
+    "Residual samples are not reused for cache training."
+  ]
+}
