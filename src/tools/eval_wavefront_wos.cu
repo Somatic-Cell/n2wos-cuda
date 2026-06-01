@@ -244,6 +244,7 @@ void write_run_json(std::ostream& out, const std::string& name, const n2wos::Wav
   out << "      \"us_per_sample\": " << s.us_per_sample << ",\n";
   out << "      \"launched_query_slots\": " << s.launched_query_slots << ",\n";
   out << "      \"mean_launched_query_slots_per_sample\": " << s.mean_launched_query_slots_per_sample << ",\n";
+  out << "      \"scheduled_query_rounds\": " << s.scheduled_query_rounds << ",\n";
   out << "      \"forced_max_steps\": " << s.forced_max_steps << ",\n";
   out << "      \"overflow_count\": " << s.overflow_count << "\n";
   out << "    }";
@@ -342,6 +343,7 @@ int main(int argc, char** argv) {
     json << "    \"per_walk_kernel_launch\": false,\n";
     json << "    \"active_compaction\": false,\n";
     json << "    \"inactive_slots_skip_bvh_traversal\": true,\n";
+    json << "    \"coarse_query_rounds_capped_at_depth_m\": true,\n";
     json << "    \"cache_backend\": \"analytic_oracle_debug_only\",\n";
     json << "    \"tcnn_in_solver\": false,\n";
     json << "    \"timing_scope\": \"cuda_events_include_wavefront_query_update_reduction_exclude_bvh_build_allocation_final_readback\",\n";

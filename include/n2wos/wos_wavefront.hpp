@@ -36,6 +36,7 @@ struct WavefrontRunStats {
   double us_per_sample = 0.0;
   double launched_query_slots = 0.0;
   double mean_launched_query_slots_per_sample = 0.0;
+  int scheduled_query_rounds = 0;
   unsigned long long forced_max_steps = 0;
   unsigned long long overflow_count = 0;
 };

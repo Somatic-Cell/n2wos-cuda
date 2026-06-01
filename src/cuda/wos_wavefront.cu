@@ -222,6 +222,19 @@ int method_to_device(WavefrontMethod method) {
   throw std::runtime_error("unknown WavefrontMethod");
 }
 
+int scheduled_query_rounds(WavefrontMethod method, const WavefrontRunOptions& options) {
+  // The coarse estimator stops after the first query at step depth_m.
+  // Running the remaining max_steps rounds only launches masked no-op kernels and
+  // badly overstates the cost of the cheap level. Pure WoS and the residual
+  // continuation still use max_steps as the safety cap until a later compacting
+  // wavefront queue is introduced.
+  if (method == WavefrontMethod::OracleCoarse) {
+    const int m = std::max(0, options.depth_m);
+    return std::min(options.max_steps, m) + 1;
+  }
+  return options.max_steps + 1;
+}
+
 DeviceVec3 to_device(Vec3f p) {
   return DeviceVec3{p.x, p.y, p.z};
 }
@@ -320,7 +333,8 @@ WavefrontRunStats run_wavefront_harmonic(const CuBqlBvh& bvh,
     N2WOS_CUDA_CHECK(cudaEventCreate(&stop));
     N2WOS_CUDA_CHECK(cudaEventRecord(start));
 
-    for (int iter = 0; iter <= options.max_steps; ++iter) {
+    const int n_query_rounds = scheduled_query_rounds(method, options);
+    for (int iter = 0; iter < n_query_rounds; ++iter) {
       bvh.query_device_masked(d_positions,
                               d_active,
                               n,
@@ -401,8 +415,9 @@ WavefrontRunStats run_wavefront_harmonic(const CuBqlBvh& bvh,
     stats.mean_steps = steps / static_cast<double>(n);
     stats.elapsed_ms = elapsed_ms;
     stats.us_per_sample = 1000.0 * static_cast<double>(elapsed_ms) / static_cast<double>(n);
-    stats.launched_query_slots = static_cast<double>(n) * static_cast<double>(options.max_steps + 1);
-    stats.mean_launched_query_slots_per_sample = static_cast<double>(options.max_steps + 1);
+    stats.launched_query_slots = static_cast<double>(n) * static_cast<double>(n_query_rounds);
+    stats.mean_launched_query_slots_per_sample = static_cast<double>(n_query_rounds);
+    stats.scheduled_query_rounds = n_query_rounds;
     stats.forced_max_steps = forced;
     stats.overflow_count = overflow;
 
