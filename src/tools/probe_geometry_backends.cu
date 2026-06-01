@@ -912,6 +912,15 @@ int main(int argc, char** argv) {
       runs.push_back(std::move(custom_run));
     }
 
+#ifndef N2WOS_HAS_CUBQL
+    // In builds without cuBQL, the comparison result is intentionally unused.
+    // Keep the variables in the common code path so the cuBQL build can compare
+    // each production candidate against the custom CUDA BVH result without
+    // retaining a pointer into the runs vector.
+    (void)custom_comparison_result;
+    (void)has_custom_comparison_result;
+#endif
+
 #ifdef N2WOS_HAS_CUBQL
     if (opt.run_cubql) {
       const n2wos::CudaBvhQueryResult* comparison = has_custom_comparison_result ? &custom_comparison_result : nullptr;

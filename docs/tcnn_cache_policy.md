@@ -18,6 +18,8 @@ The cache path used by NC / NC+2LMC must satisfy the following constraints:
 
 This verifies the key interface requirement before the common WoS / NC / 2LMC sampling engine is implemented.
 
-## JIT fusion
+## RTC and JIT fusion
 
-Manual or automatic JIT fusion is not required for patch 0003. The first production path should use native batched inference. JIT fusion may be enabled later and benchmarked separately because WoS traversal is divergent, whereas tiny-cuda-nn fused kernels have warp-level assumptions that may not combine well with a branchy random-walk kernel.
+Patch 0003a builds tiny-cuda-nn with RTC support enabled by default. This is a link-compatibility choice for the current native `Trainer` path: tiny-cuda-nn training/backward templates reference RTC helper symbols, and the upstream build defines those symbols when `TCNN_BUILD_WITH_RTC` is enabled. Runtime JIT fusion remains disabled by default in `n2wos_probe_tcnn_cache`; pass `--jit 1` only when explicitly benchmarking fused inference.
+
+Manual or automatic JIT fusion is not required for the first production path. The first production path should use native batched inference. JIT fusion may be enabled later and benchmarked separately because WoS traversal is divergent, whereas tiny-cuda-nn fused kernels have warp-level assumptions that may not combine well with a branchy random-walk kernel.

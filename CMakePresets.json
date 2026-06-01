@@ -47,6 +47,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CUDA_ARCHITECTURES": "86",
         "N2WOS_ENABLE_TCNN": "ON",
+        "N2WOS_ENABLE_TCNN_RTC": "ON",
         "N2WOS_TCNN_DIR": "${sourceDir}/external/tiny-cuda-nn"
       }
     },
@@ -61,6 +62,7 @@
         "N2WOS_ENABLE_CUBQL": "ON",
         "N2WOS_CUBQL_DIR": "${sourceDir}/external/cuBQL",
         "N2WOS_ENABLE_TCNN": "ON",
+        "N2WOS_ENABLE_TCNN_RTC": "ON",
         "N2WOS_TCNN_DIR": "${sourceDir}/external/tiny-cuda-nn"
       }
     }

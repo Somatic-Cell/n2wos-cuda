@@ -29,7 +29,13 @@ endif()
 # scripts/fetch_tcnn.py, which must clone submodules recursively because
 # tiny-cuda-nn requires CUTLASS, fmt, cmrc, and other bundled dependencies.
 option(N2WOS_ENABLE_TCNN "Enable tiny-cuda-nn native C++/CUDA cache backend" OFF)
-option(N2WOS_ENABLE_TCNN_RTC "Enable tiny-cuda-nn RTC/JIT support; optional for this probe" OFF)
+# Keep tiny-cuda-nn RTC support enabled by default even though the probe does
+# not request JIT fusion at runtime unless --jit 1 is passed.  Current
+# tiny-cuda-nn headers instantiate training/backward templates that reference
+# CudaRtcKernel::set; that symbol is only defined by tiny-cuda-nn when
+# TCNN_BUILD_WITH_RTC is enabled.  Disabling RTC therefore creates a link-time
+# failure in native Trainer-based probes.
+option(N2WOS_ENABLE_TCNN_RTC "Build tiny-cuda-nn with RTC/JIT support; runtime JIT is still controlled by --jit" ON)
 set(N2WOS_TCNN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/tiny-cuda-nn" CACHE PATH "Path to a local NVlabs/tiny-cuda-nn checkout")
 
 set(N2WOS_HAS_TCNN OFF)
@@ -51,6 +57,7 @@ if(N2WOS_ENABLE_TCNN)
   set(TCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(TCNN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(TCNN_BUILD_WITH_RTC ${N2WOS_ENABLE_TCNN_RTC} CACHE BOOL "" FORCE)
+  message(STATUS "N2WOS tiny-cuda-nn RTC support: ${N2WOS_ENABLE_TCNN_RTC}")
   set(TCNN_ALLOW_CUBLAS_CUSOLVER OFF CACHE BOOL "" FORCE)
   set(TCNN_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}" CACHE STRING "" FORCE)
 

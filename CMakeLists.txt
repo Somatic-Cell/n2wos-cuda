@@ -121,6 +121,8 @@ if(N2WOS_HAS_TCNN)
     PRIVATE
       n2wos_core
       CUDA::cudart
+      CUDA::cuda_driver
+      CUDA::nvrtc
       tiny-cuda-nn)
 
   target_compile_definitions(n2wos_probe_tcnn_cache PRIVATE N2WOS_HAS_TCNN=1)

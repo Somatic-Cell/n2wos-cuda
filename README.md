@@ -169,7 +169,7 @@ Fetch tiny-cuda-nn recursively:
 python3 scripts/fetch_tcnn.py --dest external/tiny-cuda-nn
 ```
 
-Build the TCNN probe:
+Build the TCNN probe. The preset builds tiny-cuda-nn with RTC support enabled because current tiny-cuda-nn Trainer templates reference RTC helper symbols even when this probe leaves runtime JIT disabled by default. This does not mean the benchmark uses fused JIT inference unless `--jit 1` is passed.
 
 ```bash
 rm -rf build/cuda-release-tcnn
