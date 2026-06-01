@@ -48,4 +48,14 @@ WavefrontRunStats run_wavefront_harmonic(const CuBqlBvh& bvh,
                                           WavefrontMethod method,
                                           const WavefrontRunOptions& options);
 
+// Persistent per-sample kernel variant.  Each CUDA thread owns one walk and
+// performs its own cuBQL closest-point traversal loop on device, avoiding the
+// host-controlled global step loop used by run_wavefront_harmonic.  This is a
+// more production-like path for pure WoS and oracle diagnostics; TCNN cache
+// integration will still use batched inference between prefix and residual
+// stages.
+WavefrontRunStats run_persistent_harmonic(const CuBqlBvh& bvh,
+                                          WavefrontMethod method,
+                                          const WavefrontRunOptions& options);
+
 }  // namespace n2wos

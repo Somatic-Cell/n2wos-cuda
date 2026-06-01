@@ -45,6 +45,7 @@ def parse_csv_floats(text: str) -> List[float]:
 def add_common_solver_args(cmd: List[str], args: argparse.Namespace) -> None:
     cmd += [
         '--mesh', args.mesh,
+        '--engine', args.engine,
         '--max-steps', str(args.max_steps),
         '--epsilon', str(args.epsilon),
         '--step-scale', str(args.step_scale),
@@ -129,6 +130,7 @@ def flatten_summary_row(label: str, doc: Dict[str, Any], extra: Dict[str, Any], 
     row: Dict[str, Any] = {
         'label': label,
         'method': estimator.get('method', options.get('method')),
+        'engine': estimator.get('engine', options.get('engine')),
         'depth_m': options.get('depth_m'),
         'samples': options.get('samples'),
         'coarse_samples': options.get('coarse_samples'),
@@ -173,6 +175,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('--output-dir', default='results/wavefront_oracle_sweep')
     parser.add_argument('--summary-name', default='summary')
     parser.add_argument('--mesh', default='procedural_bumpy_sphere', choices=['procedural_bumpy_sphere', 'obj', 'ply'])
+    parser.add_argument('--engine', default='wavefront', choices=['wavefront', 'persistent'],
+                        help='Sampling engine passed to n2wos_eval_wavefront_wos')
     parser.add_argument('--mesh-path', default='')
     parser.add_argument('--normalize', type=int, choices=[0, 1], default=1)
     parser.add_argument('--bumpy-stacks', type=int, default=128)

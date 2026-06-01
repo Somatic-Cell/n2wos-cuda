@@ -86,3 +86,31 @@ The script writes both the actual score for the requested allocation and this
 predicted optimum score. These scores are diagnostic only; the current engine
 still uses a global-step wavefront without active compaction and is not a final
 wall-clock implementation.
+
+## 0004d persistent per-sample diagnostic engine
+
+The initial `wavefront` engine keeps all walker state on the GPU and avoids
+per-walk kernel launches, but the host still controls the global step loop.  It
+therefore launches one cuBQL query kernel and one update kernel per scheduled
+step.  This is useful for matching a future batched TCNN inference design, but
+it can overstate launch overhead in single-point diagnostics.
+
+`--engine persistent` adds a diagnostic engine in which one CUDA thread owns one
+walk and performs the cuBQL closest-point traversal loop directly on device.
+This path has no host-controlled step loop and no CPU-GPU transfer inside the
+sampling loop.  It is intended to answer whether the poor oracle 2LMC score is
+caused mainly by the global-step wavefront scaffold or by the estimator/cost
+trade-off itself.
+
+The persistent engine is still not the final NC+2LMC implementation: TCNN cache
+inference is not called inside the persistent kernel.  The expected production
+layout remains a hybrid design:
+
+```text
+prefix persistent kernel to X_m
+batched tiny-cuda-nn inference on X_m
+persistent continuation/residual kernel
+GPU reduction
+```
+
+Use the same executable and method flags, adding `--engine persistent`.

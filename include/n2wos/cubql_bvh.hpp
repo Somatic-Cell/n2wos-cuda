@@ -13,6 +13,10 @@
 
 namespace n2wos {
 
+enum class WavefrontMethod;
+struct WavefrontRunOptions;
+struct WavefrontRunStats;
+
 // NVIDIA cuBQL-backed triangle closest-point backend.
 //
 // This backend is optional and is built only when N2WOS_ENABLE_CUBQL=ON. It is
@@ -64,6 +68,10 @@ class CuBqlBvh {
   std::string build_method() const;
 
  private:
+  friend WavefrontRunStats run_persistent_harmonic(const CuBqlBvh& bvh,
+                                                   WavefrontMethod method,
+                                                   const WavefrontRunOptions& options);
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

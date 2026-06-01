@@ -29,6 +29,7 @@ struct Options {
   float bumpy_amplitude = 0.15f;
 
   std::string method = "pure_wos";
+  std::string engine = "wavefront";
   int samples = 65536;
   int coarse_samples = 0;
   int residual_samples = 0;
@@ -98,6 +99,7 @@ void print_usage(const char* argv0) {
       << "  --mesh procedural_bumpy_sphere|obj|ply\n"
       << "  --mesh-path PATH\n"
       << "  --method pure_wos|oracle_coarse|oracle_residual|oracle_2lmc\n"
+      << "  --engine wavefront|persistent   default wavefront; persistent uses one CUDA thread per walk\n"
       << "  --samples N\n"
       << "  --coarse-samples N       for oracle_2lmc; default samples\n"
       << "  --residual-samples N     for oracle_2lmc; default max(1, samples/8)\n"
@@ -132,6 +134,8 @@ Options parse_args(int argc, char** argv) {
       opt.bumpy_amplitude = parse_float(require_value(i, argc, argv), "--bumpy-amplitude");
     } else if (arg == "--method") {
       opt.method = require_value(i, argc, argv);
+    } else if (arg == "--engine") {
+      opt.engine = require_value(i, argc, argv);
     } else if (arg == "--samples") {
       opt.samples = parse_int(require_value(i, argc, argv), "--samples");
     } else if (arg == "--coarse-samples") {
@@ -165,6 +169,9 @@ Options parse_args(int argc, char** argv) {
   if (opt.method != "pure_wos" && opt.method != "oracle_coarse" &&
       opt.method != "oracle_residual" && opt.method != "oracle_2lmc") {
     throw std::runtime_error("--method must be pure_wos, oracle_coarse, oracle_residual, or oracle_2lmc");
+  }
+  if (opt.engine != "wavefront" && opt.engine != "persistent") {
+    throw std::runtime_error("--engine must be wavefront or persistent");
   }
   if (opt.samples <= 0 || opt.max_steps <= 0 || opt.block_size <= 0) {
     throw std::runtime_error("samples, max-steps, and block-size must be positive");
@@ -250,6 +257,20 @@ void write_run_json(std::ostream& out, const std::string& name, const n2wos::Wav
   out << "    }";
 }
 
+
+n2wos::WavefrontRunStats run_selected_engine(const n2wos::CuBqlBvh& bvh,
+                                             const std::string& engine,
+                                             n2wos::WavefrontMethod method,
+                                             const n2wos::WavefrontRunOptions& run_opt) {
+  if (engine == "wavefront") {
+    return n2wos::run_wavefront_harmonic(bvh, method, run_opt);
+  }
+  if (engine == "persistent") {
+    return n2wos::run_persistent_harmonic(bvh, method, run_opt);
+  }
+  throw std::runtime_error("unknown engine: " + engine);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -283,21 +304,21 @@ int main(int argc, char** argv) {
     double elapsed_ms_total = 0.0;
 
     if (opt.method == "pure_wos") {
-      const n2wos::WavefrontRunStats s = n2wos::run_wavefront_harmonic(bvh, n2wos::WavefrontMethod::PureWos, run_opt);
+      const n2wos::WavefrontRunStats s = run_selected_engine(bvh, opt.engine, n2wos::WavefrontMethod::PureWos, run_opt);
       estimator_mean = s.mean;
       estimator_variance = s.estimator_variance;
       estimator_stderr = s.stderr;
       elapsed_ms_total = s.elapsed_ms;
       write_run_json(runs_json, "pure_wos", s, exact_u_x0);
     } else if (opt.method == "oracle_coarse") {
-      const n2wos::WavefrontRunStats s = n2wos::run_wavefront_harmonic(bvh, n2wos::WavefrontMethod::OracleCoarse, run_opt);
+      const n2wos::WavefrontRunStats s = run_selected_engine(bvh, opt.engine, n2wos::WavefrontMethod::OracleCoarse, run_opt);
       estimator_mean = s.mean;
       estimator_variance = s.estimator_variance;
       estimator_stderr = s.stderr;
       elapsed_ms_total = s.elapsed_ms;
       write_run_json(runs_json, "oracle_coarse", s, exact_u_x0);
     } else if (opt.method == "oracle_residual") {
-      const n2wos::WavefrontRunStats s = n2wos::run_wavefront_harmonic(bvh, n2wos::WavefrontMethod::OracleResidual, run_opt);
+      const n2wos::WavefrontRunStats s = run_selected_engine(bvh, opt.engine, n2wos::WavefrontMethod::OracleResidual, run_opt);
       estimator_mean = s.mean;
       estimator_variance = s.estimator_variance;
       estimator_stderr = s.stderr;
@@ -309,8 +330,8 @@ int main(int argc, char** argv) {
       coarse_opt.samples = opt.coarse_samples > 0 ? opt.coarse_samples : opt.samples;
       residual_opt.samples = opt.residual_samples > 0 ? opt.residual_samples : std::max(1, opt.samples / 8);
       residual_opt.seed = opt.seed ^ 0x517cc1b727220a95ull;
-      const n2wos::WavefrontRunStats coarse = n2wos::run_wavefront_harmonic(bvh, n2wos::WavefrontMethod::OracleCoarse, coarse_opt);
-      const n2wos::WavefrontRunStats residual = n2wos::run_wavefront_harmonic(bvh, n2wos::WavefrontMethod::OracleResidual, residual_opt);
+      const n2wos::WavefrontRunStats coarse = run_selected_engine(bvh, opt.engine, n2wos::WavefrontMethod::OracleCoarse, coarse_opt);
+      const n2wos::WavefrontRunStats residual = run_selected_engine(bvh, opt.engine, n2wos::WavefrontMethod::OracleResidual, residual_opt);
       estimator_mean = coarse.mean + residual.mean;
       estimator_variance = coarse.estimator_variance + residual.estimator_variance;
       estimator_stderr = std::sqrt(estimator_variance);
@@ -333,17 +354,17 @@ int main(int argc, char** argv) {
     json << "    \"device\": " << n2wos::json_quote(n2wos::cuda_device_summary()) << "\n";
     json << "  },\n";
     json << "  \"implementation_mode\": {\n";
-    json << "    \"engine\": \"batched_wavefront_global_step_loop\",\n";
+    json << "    \"engine\": " << n2wos::json_quote(opt.engine == "persistent" ? "persistent_per_sample_kernel" : "batched_wavefront_global_step_loop") << ",\n";
     json << "    \"geometry_backend\": \"cubql_cuda\",\n";
     json << "    \"geometry_build_method\": " << n2wos::json_quote(opt.cubql_build_method) << ",\n";
     json << "    \"gpu_resident_walker_state\": true,\n";
     json << "    \"gpu_rng\": \"pcg32_per_sample_state\",\n";
     json << "    \"cpu_gpu_transfer_inside_sampling_loop\": false,\n";
-    json << "    \"host_controls_global_step_loop\": true,\n";
+    json << "    \"host_controls_global_step_loop\": " << (opt.engine == "persistent" ? "false" : "true") << ",\n";
     json << "    \"per_walk_kernel_launch\": false,\n";
     json << "    \"active_compaction\": false,\n";
-    json << "    \"inactive_slots_skip_bvh_traversal\": true,\n";
-    json << "    \"coarse_query_rounds_capped_at_depth_m\": true,\n";
+    json << "    \"inactive_slots_skip_bvh_traversal\": " << (opt.engine == "persistent" ? "false" : "true") << ",\n";
+    json << "    \"coarse_query_rounds_capped_at_depth_m\": " << (opt.engine == "persistent" ? "\"not_applicable\"" : "true") << ",\n";
     json << "    \"cache_backend\": \"analytic_oracle_debug_only\",\n";
     json << "    \"tcnn_in_solver\": false,\n";
     json << "    \"timing_scope\": \"cuda_events_include_wavefront_query_update_reduction_exclude_bvh_build_allocation_final_readback\",\n";
@@ -354,6 +375,7 @@ int main(int argc, char** argv) {
     json << "    \"mesh_path\": " << n2wos::json_quote(opt.mesh_path) << ",\n";
     json << "    \"normalize\": " << (opt.normalize ? "true" : "false") << ",\n";
     json << "    \"method\": " << n2wos::json_quote(opt.method) << ",\n";
+    json << "    \"engine\": " << n2wos::json_quote(opt.engine) << ",\n";
     json << "    \"samples\": " << opt.samples << ",\n";
     json << "    \"coarse_samples\": " << opt.coarse_samples << ",\n";
     json << "    \"residual_samples\": " << opt.residual_samples << ",\n";
@@ -388,6 +410,7 @@ int main(int argc, char** argv) {
     json << "  \"runs\": {\n" << runs_json.str() << "\n  },\n";
     json << "  \"estimator\": {\n";
     json << "    \"method\": " << n2wos::json_quote(opt.method) << ",\n";
+    json << "    \"engine\": " << n2wos::json_quote(opt.engine) << ",\n";
     json << "    \"mean\": " << estimator_mean << ",\n";
     json << "    \"exact\": " << exact_u_x0 << ",\n";
     json << "    \"error\": " << estimator_error << ",\n";
