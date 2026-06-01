@@ -189,3 +189,37 @@ Run it:
 ```
 
 Use `cuda-release-cubql-tcnn` when geometry and cache probes should be built in the same tree.
+
+### 0004 GPU-resident wavefront WoS / oracle 2LMC scaffold
+
+Patch 0004 adds `n2wos_eval_wavefront_wos`. This is the first common sampling
+engine for pure WoS, oracle NC-only, and oracle 2LMC diagnostics. Walker state,
+RNG state, closest-point outputs, boundary evaluation, and reductions remain in
+CUDA memory. The host controls the global wavefront loop, but there is no
+CPU-GPU transfer inside WoS steps and no per-walk kernel launch.
+
+Build with cuBQL enabled:
+
+```bash
+python3 scripts/fetch_cubql.py --dest external/cuBQL
+rm -rf build/cuda-release-cubql
+cmake --preset cuda-release-cubql
+cmake --build --preset cuda-release-cubql -j
+```
+
+Pure WoS pointwise diagnostic:
+
+```bash
+./build/cuda-release-cubql/n2wos_eval_wavefront_wos   --mesh procedural_bumpy_sphere   --bumpy-stacks 128   --bumpy-slices 256   --method pure_wos   --samples 262144   --max-steps 256   --epsilon 1e-4   --x0 0.1,0.05,0   --cubql-build-method sah   --cubql-leaf-size 8   --output results/eval_wavefront_wos_pure_bumpy.json
+```
+
+Oracle 2LMC diagnostic with separate coarse and residual sample counts:
+
+```bash
+./build/cuda-release-cubql/n2wos_eval_wavefront_wos   --mesh procedural_bumpy_sphere   --method oracle_2lmc   --coarse-samples 262144   --residual-samples 65536   --depth-m 8   --max-steps 256   --epsilon 1e-4   --x0 0.1,0.05,0   --cubql-build-method sah   --output results/eval_wavefront_wos_oracle_2lmc_bumpy.json
+```
+
+The current engine has no active queue compaction. Completed walkers are masked,
+so BVH traversal is skipped for inactive slots, but kernels are still launched
+over the full slot array. The JSON labels this as a scaffold rather than final
+wall-clock timing.

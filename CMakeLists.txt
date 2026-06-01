@@ -113,6 +113,48 @@ target_compile_options(n2wos_probe_geometry_backends PRIVATE
 
 install(TARGETS n2wos_probe_geometry_backends RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+if(N2WOS_HAS_CUBQL)
+  add_library(n2wos_wavefront STATIC
+    src/cuda/wos_wavefront.cu)
+
+  target_include_directories(n2wos_wavefront
+    PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda)
+
+  target_link_libraries(n2wos_wavefront
+    PUBLIC
+      n2wos_cubql
+      CUDA::cudart)
+
+  target_compile_features(n2wos_wavefront PUBLIC cxx_std_17)
+  target_compile_definitions(n2wos_wavefront PUBLIC N2WOS_HAS_CUBQL=1)
+  set_target_properties(n2wos_wavefront PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+  target_compile_options(n2wos_wavefront PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+
+  add_executable(n2wos_eval_wavefront_wos
+    src/tools/eval_wavefront_wos.cu)
+
+  target_link_libraries(n2wos_eval_wavefront_wos
+    PRIVATE
+      n2wos_wavefront)
+
+  set_target_properties(n2wos_eval_wavefront_wos PROPERTIES
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+  target_compile_options(n2wos_eval_wavefront_wos PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+
+  install(TARGETS n2wos_wavefront ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(TARGETS n2wos_eval_wavefront_wos RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
 if(N2WOS_HAS_TCNN)
   add_executable(n2wos_probe_tcnn_cache
     src/tools/probe_tcnn_cache.cu)

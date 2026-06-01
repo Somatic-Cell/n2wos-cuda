@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,6 +42,19 @@ class CuBqlBvh {
                     int* d_overflow,
                     int block_size = 128,
                     cudaStream_t stream = 0) const;
+
+  // Wavefront variant. Slots with d_active[i] == 0 skip BVH traversal and
+  // produce neutral outputs. This avoids per-step active-count readback while
+  // keeping walker state resident on the GPU.
+  void query_device_masked(const DeviceVec3* d_points,
+                           const std::uint8_t* d_active,
+                           int query_count,
+                           float* d_distance2,
+                           DeviceVec3* d_closest,
+                           int* d_triangle_id,
+                           int* d_overflow,
+                           int block_size = 128,
+                           cudaStream_t stream = 0) const;
 
   std::size_t triangle_count() const;
   std::size_t node_count() const;

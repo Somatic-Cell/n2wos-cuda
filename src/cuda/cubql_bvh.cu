@@ -126,6 +126,7 @@ __global__ void generate_cubql_boxes_kernel(cuBQL::box3f* box_for_builder,
 }
 
 __global__ void cubql_closest_point_kernel(const DeviceVec3* __restrict__ query_points,
+                                           const std::uint8_t* __restrict__ active_mask,
                                            int query_count,
                                            const cuBQL::Triangle* __restrict__ triangles,
                                            cuBQL::bvh3f bvh,
@@ -135,6 +136,13 @@ __global__ void cubql_closest_point_kernel(const DeviceVec3* __restrict__ query_
                                            int* __restrict__ out_overflow) {
   const int qid = blockIdx.x * blockDim.x + threadIdx.x;
   if (qid >= query_count) return;
+  if (active_mask && active_mask[qid] == 0) {
+    out_distance2[qid] = 0.0f;
+    out_closest[qid] = query_points[qid];
+    out_triangle_id[qid] = -1;
+    out_overflow[qid] = 0;
+    return;
+  }
 
   const cuBQL::vec3f query_point = to_cubql_vec3(query_points[qid]);
   cuBQL::triangles::CPAT cpat;
@@ -254,6 +262,43 @@ void CuBqlBvh::query_device(const DeviceVec3* d_points,
 
   const int grid_size = (query_count + block_size - 1) / block_size;
   cubql_closest_point_kernel<<<grid_size, block_size, 0, stream>>>(d_points,
+                                                                  nullptr,
+                                                                  query_count,
+                                                                  impl_->d_triangles,
+                                                                  impl_->bvh,
+                                                                  d_distance2,
+                                                                  d_closest,
+                                                                  d_triangle_id,
+                                                                  d_overflow);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
+}
+
+void CuBqlBvh::query_device_masked(const DeviceVec3* d_points,
+                                   const std::uint8_t* d_active,
+                                   int query_count,
+                                   float* d_distance2,
+                                   DeviceVec3* d_closest,
+                                   int* d_triangle_id,
+                                   int* d_overflow,
+                                   int block_size,
+                                   cudaStream_t stream) const {
+  if (!impl_ || !impl_->d_triangles || !impl_->bvh.nodes || !impl_->bvh.primIDs) {
+    throw std::runtime_error("CuBqlBvh::query_device_masked called on empty BVH");
+  }
+  if (query_count < 0) {
+    throw std::runtime_error("CuBqlBvh::query_device_masked query_count must be non-negative");
+  }
+  if (query_count == 0) return;
+  if (!d_points || !d_active || !d_distance2 || !d_closest || !d_triangle_id || !d_overflow) {
+    throw std::runtime_error("CuBqlBvh::query_device_masked received a null device pointer");
+  }
+  if (block_size <= 0 || block_size > 1024) {
+    throw std::runtime_error("CUDA block size must be in [1, 1024]");
+  }
+
+  const int grid_size = (query_count + block_size - 1) / block_size;
+  cubql_closest_point_kernel<<<grid_size, block_size, 0, stream>>>(d_points,
+                                                                  d_active,
                                                                   query_count,
                                                                   impl_->d_triangles,
                                                                   impl_->bvh,
