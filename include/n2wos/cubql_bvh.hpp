@@ -16,6 +16,10 @@ namespace n2wos {
 enum class WavefrontMethod;
 struct WavefrontRunOptions;
 struct WavefrontRunStats;
+struct SliceRenderOptions;
+struct SliceRenderResult;
+struct NcDeviceDatasetOptions;
+struct NcDeviceSampleOptions;
 
 // NVIDIA cuBQL-backed triangle closest-point backend.
 //
@@ -71,6 +75,31 @@ class CuBqlBvh {
   friend WavefrontRunStats run_persistent_harmonic(const CuBqlBvh& bvh,
                                                    WavefrontMethod method,
                                                    const WavefrontRunOptions& options);
+  friend SliceRenderResult render_persistent_harmonic_slice(const CuBqlBvh& bvh,
+                                                            const Mesh& mesh,
+                                                            const SliceRenderOptions& options);
+  friend void launch_nc_update_labels(const CuBqlBvh& bvh,
+                                      const NcDeviceDatasetOptions& options,
+                                      float* d_inputs,
+                                      float* d_targets,
+                                      int* d_counts,
+                                      cudaStream_t stream);
+  friend void launch_nc_pure_wos_samples(const CuBqlBvh& bvh,
+                                         const NcDeviceSampleOptions& options,
+                                         float* d_sample_values,
+                                         int* d_step_count,
+                                         int* d_forced_max_steps,
+                                         int* d_query_overflow,
+                                         cudaStream_t stream);
+  friend void launch_nc_hybrid_prefix(const CuBqlBvh& bvh,
+                                      const NcDeviceSampleOptions& options,
+                                      float* d_prefix_inputs,
+                                      float* d_boundary_values,
+                                      std::uint8_t* d_needs_cache,
+                                      int* d_step_count,
+                                      int* d_forced_max_steps,
+                                      int* d_query_overflow,
+                                      cudaStream_t stream);
 
   struct Impl;
   std::unique_ptr<Impl> impl_;

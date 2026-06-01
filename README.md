@@ -223,3 +223,58 @@ The current engine has no active queue compaction. Completed walkers are masked,
 so BVH traversal is skipped for inactive slots, but kernels are still launched
 over the full slot array. The JSON labels this as a scaffold rather than final
 wall-clock timing.
+
+### Slice visualization diagnostic
+
+After building with cuBQL, a dependency-free field renderer is available:
+
+```bash
+./build/cuda-release-cubql/n2wos_render_harmonic_slice \
+  --mesh procedural_bumpy_sphere \
+  --bumpy-stacks 128 \
+  --bumpy-slices 256 \
+  --width 128 \
+  --height 128 \
+  --samples-per-pixel 256 \
+  --view xy \
+  --plane-z 0 \
+  --max-steps 256 \
+  --epsilon 1e-4 \
+  --cubql-build-method sah \
+  --output-prefix results/harmonic_slice_bumpy
+```
+
+This writes JSON/CSV plus PPM heatmaps for the inside mask, exact value,
+estimate, error, and stderr. It renders a planar cross-section, not a camera
+projection. Use `--view xy|xz|yz` to inspect the principal slices. The renderer
+preserves world aspect by default. It is a visual diagnostic for the current
+harmonic target, not a final benchmark.
+
+### 0005 TCNN Neural Cache + WoS screening probe
+
+When both cuBQL and tiny-cuda-nn are enabled, the repository builds a biased
+Neural Cache early-termination diagnostic:
+
+```bash
+cmake --preset cuda-release-cubql-tcnn
+cmake --build --preset cuda-release-cubql-tcnn -j
+
+./build/cuda-release-cubql-tcnn/n2wos_eval_tcnn_nc_wos \
+  --mesh procedural_bumpy_sphere \
+  --boundary external_charges_high \
+  --label-source wos_supervision \
+  --train-points 20000 \
+  --eval-points 8192 \
+  --label-refreshes 4 \
+  --walks-per-label-refresh 16 \
+  --train-steps-per-refresh 1000 \
+  --pure-walks-per-point 64 \
+  --hybrid-walks-per-point 4 \
+  --depth-m 1 \
+  --cubql-build-method sah \
+  --output results/eval_tcnn_nc_wos_bumpy_high.json
+```
+
+The training schedule is fixed. WoS supervision updates each point's target as a
+running average, then tiny-cuda-nn trains against that target. This executable is
+a biased NC/NC+WoS screening experiment, not the unbiased 2LMC residual path.

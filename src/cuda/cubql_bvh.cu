@@ -1,4 +1,6 @@
 #include "n2wos/cubql_bvh.hpp"
+#include "n2wos/mesh.hpp"
+#include "n2wos/tcnn_nc_wos.hpp"
 #include "n2wos/wos_wavefront.hpp"
 
 #include <cuda_runtime.h>
@@ -7,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -53,6 +56,57 @@ DeviceVec3 to_device_vec3(const Vec3f& p) {
 
 Vec3f from_device_vec3(const DeviceVec3& p) {
   return Vec3f{p.x, p.y, p.z};
+}
+
+struct SliceAxes {
+  int u_axis = 0;
+  int v_axis = 1;
+  int fixed_axis = 2;
+};
+
+SliceAxes slice_axes_for_view(const std::string& view) {
+  if (view == "xy") return SliceAxes{0, 1, 2};
+  if (view == "xz") return SliceAxes{0, 2, 1};
+  if (view == "yz") return SliceAxes{1, 2, 0};
+  throw std::runtime_error("slice view must be one of: xy, xz, yz");
+}
+
+float axis_value(const Vec3f& p, int axis) {
+  if (axis == 0) return p.x;
+  if (axis == 1) return p.y;
+  return p.z;
+}
+
+Vec3f make_slice_point(const SliceAxes& axes, float u, float v, float plane_coord) {
+  Vec3f p{0.0f, 0.0f, 0.0f};
+  if (axes.u_axis == 0) p.x = u; else if (axes.u_axis == 1) p.y = u; else p.z = u;
+  if (axes.v_axis == 0) p.x = v; else if (axes.v_axis == 1) p.y = v; else p.z = v;
+  if (axes.fixed_axis == 0) p.x = plane_coord; else if (axes.fixed_axis == 1) p.y = plane_coord; else p.z = plane_coord;
+  return p;
+}
+
+void expand_frame_to_preserve_pixel_aspect(float& u_min,
+                                           float& u_max,
+                                           float& v_min,
+                                           float& v_max,
+                                           int width,
+                                           int height) {
+  const float du = u_max - u_min;
+  const float dv = v_max - v_min;
+  if (!(du > 0.0f) || !(dv > 0.0f) || width <= 0 || height <= 0) return;
+  const float image_aspect = static_cast<float>(width) / static_cast<float>(height);
+  const float frame_aspect = du / dv;
+  if (frame_aspect < image_aspect) {
+    const float new_du = image_aspect * dv;
+    const float center = 0.5f * (u_min + u_max);
+    u_min = center - 0.5f * new_du;
+    u_max = center + 0.5f * new_du;
+  } else if (frame_aspect > image_aspect) {
+    const float new_dv = du / image_aspect;
+    const float center = 0.5f * (v_min + v_max);
+    v_min = center - 0.5f * new_dv;
+    v_max = center + 0.5f * new_dv;
+  }
 }
 
 std::string canonical_build_method(std::string build_method) {
@@ -333,6 +387,146 @@ __global__ void persistent_reduce_stats_kernel(const float* sample_value,
     block_steps[blockIdx.x] = s_steps[0];
     block_forced[blockIdx.x] = s_forced[0];
     block_overflow[blockIdx.x] = s_overflow[0];
+  }
+}
+
+
+struct SliceRayTriangle {
+  Vec3f a;
+  Vec3f b;
+  Vec3f c;
+  float y_min;
+  float y_max;
+  float z_min;
+  float z_max;
+  float x_max;
+};
+
+bool ray_x_intersects_triangle(const Vec3f& p, const SliceRayTriangle& tri) {
+  if (p.y < tri.y_min || p.y > tri.y_max || p.z < tri.z_min || p.z > tri.z_max || p.x > tri.x_max) {
+    return false;
+  }
+  const Vec3f dir{1.0f, 0.0f, 0.0f};
+  const Vec3f edge1 = tri.b - tri.a;
+  const Vec3f edge2 = tri.c - tri.a;
+  const Vec3f h = cross(dir, edge2);
+  const float det = dot(edge1, h);
+  if (std::fabs(det) < 1.0e-12f) return false;
+  const float inv_det = 1.0f / det;
+  const Vec3f s = p - tri.a;
+  const float u = inv_det * dot(s, h);
+  if (u < -1.0e-7f || u > 1.0f + 1.0e-7f) return false;
+  const Vec3f q = cross(s, edge1);
+  const float v = inv_det * dot(dir, q);
+  if (v < -1.0e-7f || u + v > 1.0f + 1.0e-7f) return false;
+  const float t = inv_det * dot(edge2, q);
+  return t > 1.0e-7f;
+}
+
+std::vector<SliceRayTriangle> make_slice_ray_triangles(const Mesh& mesh) {
+  std::vector<SliceRayTriangle> tris;
+  tris.reserve(mesh.triangles.size());
+  for (const Triangle& t : mesh.triangles) {
+    SliceRayTriangle rt;
+    rt.a = mesh.vertices[t.v0];
+    rt.b = mesh.vertices[t.v1];
+    rt.c = mesh.vertices[t.v2];
+    rt.y_min = std::min({rt.a.y, rt.b.y, rt.c.y});
+    rt.y_max = std::max({rt.a.y, rt.b.y, rt.c.y});
+    rt.z_min = std::min({rt.a.z, rt.b.z, rt.c.z});
+    rt.z_max = std::max({rt.a.z, rt.b.z, rt.c.z});
+    rt.x_max = std::max({rt.a.x, rt.b.x, rt.c.x});
+    tris.push_back(rt);
+  }
+  return tris;
+}
+
+bool point_inside_closed_mesh_ray_x(const Vec3f& p, const std::vector<SliceRayTriangle>& tris) {
+  // Visualization mask only. A tiny deterministic offset reduces the chance
+  // that the +x ray exactly hits a mesh edge or vertex.
+  const Vec3f q{p.x, p.y + 1.928371e-6f, p.z + 3.141593e-6f};
+  int hits = 0;
+  for (const SliceRayTriangle& tri : tris) {
+    if (ray_x_intersects_triangle(q, tri)) ++hits;
+  }
+  return (hits & 1) != 0;
+}
+
+__global__ void persistent_harmonic_slice_samples_kernel(int total_samples,
+                                                         int samples_per_pixel,
+                                                         const DeviceVec3* __restrict__ pixel_points,
+                                                         const std::uint8_t* __restrict__ pixel_inside,
+                                                         std::uint64_t seed,
+                                                         int max_steps,
+                                                         float epsilon,
+                                                         float step_scale,
+                                                         const cuBQL::Triangle* __restrict__ triangles,
+                                                         cuBQL::bvh3f bvh,
+                                                         float* __restrict__ sample_value,
+                                                         int* __restrict__ step_count,
+                                                         int* __restrict__ forced_max_steps,
+                                                         int* __restrict__ query_overflow) {
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= total_samples) return;
+  const int pixel_id = tid / samples_per_pixel;
+  if (!pixel_inside[pixel_id]) {
+    sample_value[tid] = 0.0f;
+    step_count[tid] = 0;
+    forced_max_steps[tid] = 0;
+    query_overflow[tid] = 0;
+    return;
+  }
+
+  std::uint64_t rng = persistent_splitmix64(seed ^ (static_cast<std::uint64_t>(tid) + 0x9e3779b97f4a7c15ull));
+  if (!rng) rng = 0x853c49e6748fea9bull;
+
+  DeviceVec3 p = pixel_points[pixel_id];
+  sample_value[tid] = 0.0f;
+  step_count[tid] = 0;
+  forced_max_steps[tid] = 0;
+  query_overflow[tid] = 0;
+
+  for (int step = 0; step <= max_steps; ++step) {
+    cuBQL::triangles::CPAT cpat;
+    cpat.runQuery(triangles, bvh, to_cubql_vec3(p));
+
+    const float d2 = fmaxf(cpat.sqrDist, 0.0f);
+    const float d = sqrtf(d2);
+    const bool at_boundary = d <= epsilon;
+    const bool forced = step >= max_steps;
+
+    if (at_boundary || forced || !isfinite(d)) {
+      sample_value[tid] = persistent_harmonic(from_cubql_vec3(cpat.P));
+      step_count[tid] = step;
+      forced_max_steps[tid] = forced ? 1 : 0;
+      return;
+    }
+
+    const DeviceVec3 dir = persistent_sample_unit_sphere(&rng);
+    const float radius = step_scale * d;
+    p = persistent_make_vec3(p.x + radius * dir.x,
+                             p.y + radius * dir.y,
+                             p.z + radius * dir.z);
+  }
+
+  sample_value[tid] = 0.0f;
+  step_count[tid] = max_steps;
+  forced_max_steps[tid] = 1;
+}
+
+void validate_slice_options(const SliceRenderOptions& options) {
+  (void)slice_axes_for_view(options.slice_view);
+  if (options.width <= 0 || options.height <= 0) throw std::runtime_error("slice width/height must be positive");
+  if (options.samples_per_pixel <= 0) throw std::runtime_error("samples_per_pixel must be positive");
+  if (options.max_steps <= 0) throw std::runtime_error("max_steps must be positive");
+  if (!(options.epsilon > 0.0f)) throw std::runtime_error("epsilon must be positive");
+  if (!(options.step_scale > 0.0f && options.step_scale <= 1.0f)) throw std::runtime_error("step_scale must be in (0, 1]");
+  if (options.block_size <= 0 || options.block_size > 1024) throw std::runtime_error("block_size must be in [1, 1024]");
+  const std::uint64_t total = static_cast<std::uint64_t>(options.width) *
+                              static_cast<std::uint64_t>(options.height) *
+                              static_cast<std::uint64_t>(options.samples_per_pixel);
+  if (total > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error("width * height * samples_per_pixel exceeds int kernel indexing range");
   }
 }
 
@@ -761,6 +955,657 @@ WavefrontRunStats run_persistent_harmonic(const CuBqlBvh& bvh,
     if (d_block_overflow) cudaFree(d_block_overflow);
     throw;
   }
+}
+
+
+SliceRenderResult render_persistent_harmonic_slice(const CuBqlBvh& bvh,
+                                                   const Mesh& mesh,
+                                                   const SliceRenderOptions& options) {
+  validate_slice_options(options);
+  require_mesh_valid(mesh);
+  if (!bvh.impl_ || !bvh.impl_->d_triangles || !bvh.impl_->bvh.nodes || !bvh.impl_->bvh.primIDs) {
+    throw std::runtime_error("render_persistent_harmonic_slice called with an empty cuBQL BVH");
+  }
+
+  Aabb bounds = compute_bounds(mesh);
+  const SliceAxes axes = slice_axes_for_view(options.slice_view);
+  float u_min = options.x_min;
+  float u_max = options.x_max;
+  float v_min = options.y_min;
+  float v_max = options.y_max;
+  if (options.use_mesh_bounds) {
+    const float bounds_u_min = axis_value(bounds.min, axes.u_axis);
+    const float bounds_u_max = axis_value(bounds.max, axes.u_axis);
+    const float bounds_v_min = axis_value(bounds.min, axes.v_axis);
+    const float bounds_v_max = axis_value(bounds.max, axes.v_axis);
+    const float du = bounds_u_max - bounds_u_min;
+    const float dv = bounds_v_max - bounds_v_min;
+    const float pad_u = options.bounds_padding_fraction * du;
+    const float pad_v = options.bounds_padding_fraction * dv;
+    u_min = bounds_u_min - pad_u;
+    u_max = bounds_u_max + pad_u;
+    v_min = bounds_v_min - pad_v;
+    v_max = bounds_v_max + pad_v;
+  }
+  if (options.preserve_world_aspect) {
+    expand_frame_to_preserve_pixel_aspect(u_min, u_max, v_min, v_max, options.width, options.height);
+  }
+  if (!(u_max > u_min) || !(v_max > v_min)) {
+    throw std::runtime_error("invalid slice frame");
+  }
+
+  const int width = options.width;
+  const int height = options.height;
+  const int pixel_count = width * height;
+  const int samples_per_pixel = options.samples_per_pixel;
+  const int total_samples = pixel_count * samples_per_pixel;
+  const int block_size = options.block_size;
+  const int grid_size = (total_samples + block_size - 1) / block_size;
+
+  std::vector<DeviceVec3> h_points(pixel_count);
+  std::vector<std::uint8_t> h_inside(pixel_count, 1);
+  const std::vector<SliceRayTriangle> ray_tris = options.mask_outside_mesh ? make_slice_ray_triangles(mesh) : std::vector<SliceRayTriangle>{};
+
+  int inside_pixels = 0;
+  for (int iy = 0; iy < height; ++iy) {
+    const float v = height == 1 ? 0.5f * (v_min + v_max)
+                                : v_min + (v_max - v_min) * (static_cast<float>(iy) / static_cast<float>(height - 1));
+    for (int ix = 0; ix < width; ++ix) {
+      const float u = width == 1 ? 0.5f * (u_min + u_max)
+                                 : u_min + (u_max - u_min) * (static_cast<float>(ix) / static_cast<float>(width - 1));
+      const int pid = iy * width + ix;
+      const Vec3f p = make_slice_point(axes, u, v, options.plane_z);
+      const bool inside = options.mask_outside_mesh ? point_inside_closed_mesh_ray_x(p, ray_tris) : true;
+      h_points[pid] = DeviceVec3{p.x, p.y, p.z};
+      h_inside[pid] = inside ? 1 : 0;
+      if (inside) ++inside_pixels;
+    }
+  }
+
+  DeviceVec3* d_points = nullptr;
+  std::uint8_t* d_inside = nullptr;
+  float* d_sample_value = nullptr;
+  int* d_step_count = nullptr;
+  int* d_forced_max_steps = nullptr;
+  int* d_query_overflow = nullptr;
+  cudaEvent_t start = nullptr;
+  cudaEvent_t stop = nullptr;
+
+  try {
+    N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_points), pixel_count * sizeof(DeviceVec3)));
+    N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_inside), pixel_count * sizeof(std::uint8_t)));
+    N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_sample_value), total_samples * sizeof(float)));
+    N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_step_count), total_samples * sizeof(int)));
+    N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_forced_max_steps), total_samples * sizeof(int)));
+    N2WOS_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_query_overflow), total_samples * sizeof(int)));
+    N2WOS_CUDA_CHECK(cudaMemcpy(d_points, h_points.data(), pixel_count * sizeof(DeviceVec3), cudaMemcpyHostToDevice));
+    N2WOS_CUDA_CHECK(cudaMemcpy(d_inside, h_inside.data(), pixel_count * sizeof(std::uint8_t), cudaMemcpyHostToDevice));
+
+    N2WOS_CUDA_CHECK(cudaEventCreate(&start));
+    N2WOS_CUDA_CHECK(cudaEventCreate(&stop));
+    N2WOS_CUDA_CHECK(cudaEventRecord(start));
+    persistent_harmonic_slice_samples_kernel<<<grid_size, block_size>>>(total_samples,
+                                                                        samples_per_pixel,
+                                                                        d_points,
+                                                                        d_inside,
+                                                                        options.seed,
+                                                                        options.max_steps,
+                                                                        options.epsilon,
+                                                                        options.step_scale,
+                                                                        bvh.impl_->d_triangles,
+                                                                        bvh.impl_->bvh,
+                                                                        d_sample_value,
+                                                                        d_step_count,
+                                                                        d_forced_max_steps,
+                                                                        d_query_overflow);
+    N2WOS_CUDA_CHECK(cudaGetLastError());
+    N2WOS_CUDA_CHECK(cudaEventRecord(stop));
+    N2WOS_CUDA_CHECK(cudaEventSynchronize(stop));
+
+    float elapsed_ms = 0.0f;
+    N2WOS_CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
+
+    std::vector<float> h_sample_value(total_samples);
+    std::vector<int> h_step_count(total_samples);
+    std::vector<int> h_forced(total_samples);
+    std::vector<int> h_overflow(total_samples);
+    N2WOS_CUDA_CHECK(cudaMemcpy(h_sample_value.data(), d_sample_value, total_samples * sizeof(float), cudaMemcpyDeviceToHost));
+    N2WOS_CUDA_CHECK(cudaMemcpy(h_step_count.data(), d_step_count, total_samples * sizeof(int), cudaMemcpyDeviceToHost));
+    N2WOS_CUDA_CHECK(cudaMemcpy(h_forced.data(), d_forced_max_steps, total_samples * sizeof(int), cudaMemcpyDeviceToHost));
+    N2WOS_CUDA_CHECK(cudaMemcpy(h_overflow.data(), d_query_overflow, total_samples * sizeof(int), cudaMemcpyDeviceToHost));
+
+    SliceRenderResult result;
+    result.width = width;
+    result.height = height;
+    result.samples_per_pixel = samples_per_pixel;
+    result.inside_pixels = inside_pixels;
+    result.elapsed_ms = elapsed_ms;
+    result.us_per_active_pixel = inside_pixels > 0 ? 1000.0 * static_cast<double>(elapsed_ms) / static_cast<double>(inside_pixels) : 0.0;
+    result.us_per_launched_sample = 1000.0 * static_cast<double>(elapsed_ms) / static_cast<double>(total_samples);
+    result.frame_u_min = u_min;
+    result.frame_u_max = u_max;
+    result.frame_v_min = v_min;
+    result.frame_v_max = v_max;
+    result.world_units_per_pixel_u = width > 1 ? static_cast<double>(u_max - u_min) / static_cast<double>(width - 1) : 0.0;
+    result.world_units_per_pixel_v = height > 1 ? static_cast<double>(v_max - v_min) / static_cast<double>(height - 1) : 0.0;
+    result.slice_view = options.slice_view;
+    result.pixels.resize(pixel_count);
+
+    double sum_abs_error = 0.0;
+    double sum_sq_error = 0.0;
+    double max_abs_error = 0.0;
+    for (int pid = 0; pid < pixel_count; ++pid) {
+      SlicePixelStats pix;
+      pix.x = h_points[pid].x;
+      pix.y = h_points[pid].y;
+      pix.z = h_points[pid].z;
+      pix.inside = h_inside[pid];
+      pix.exact = static_cast<double>(pix.x) * static_cast<double>(pix.x) - static_cast<double>(pix.y) * static_cast<double>(pix.y);
+      if (pix.inside) {
+        double sum = 0.0;
+        double sum_sq = 0.0;
+        double steps = 0.0;
+        unsigned long long forced = 0;
+        unsigned long long overflow = 0;
+        const int begin = pid * samples_per_pixel;
+        for (int s = 0; s < samples_per_pixel; ++s) {
+          const int idx = begin + s;
+          const double v = static_cast<double>(h_sample_value[idx]);
+          sum += v;
+          sum_sq += v * v;
+          steps += static_cast<double>(h_step_count[idx]);
+          forced += h_forced[idx] ? 1ull : 0ull;
+          overflow += h_overflow[idx] ? 1ull : 0ull;
+        }
+        pix.samples = samples_per_pixel;
+        pix.mean = sum / static_cast<double>(samples_per_pixel);
+        const double centered = sum_sq - static_cast<double>(samples_per_pixel) * pix.mean * pix.mean;
+        pix.sample_variance = samples_per_pixel > 1 ? std::max(0.0, centered) / static_cast<double>(samples_per_pixel - 1) : 0.0;
+        pix.estimator_variance = pix.sample_variance / static_cast<double>(samples_per_pixel);
+        pix.stderr = std::sqrt(pix.estimator_variance);
+        pix.mean_steps = steps / static_cast<double>(samples_per_pixel);
+        pix.forced_max_steps = forced;
+        pix.overflow_count = overflow;
+        pix.error = pix.mean - pix.exact;
+        const double abs_error = std::fabs(pix.error);
+        sum_abs_error += abs_error;
+        sum_sq_error += pix.error * pix.error;
+        max_abs_error = std::max(max_abs_error, abs_error);
+        result.forced_max_steps += forced;
+        result.overflow_count += overflow;
+      } else {
+        pix.samples = 0;
+        pix.mean = std::numeric_limits<double>::quiet_NaN();
+        pix.error = std::numeric_limits<double>::quiet_NaN();
+        pix.sample_variance = std::numeric_limits<double>::quiet_NaN();
+        pix.estimator_variance = std::numeric_limits<double>::quiet_NaN();
+        pix.stderr = std::numeric_limits<double>::quiet_NaN();
+        pix.mean_steps = std::numeric_limits<double>::quiet_NaN();
+      }
+      result.pixels[pid] = pix;
+    }
+    if (inside_pixels > 0) {
+      result.mae_inside = sum_abs_error / static_cast<double>(inside_pixels);
+      result.rmse_inside = std::sqrt(sum_sq_error / static_cast<double>(inside_pixels));
+      result.max_abs_error_inside = max_abs_error;
+    }
+
+    N2WOS_CUDA_CHECK(cudaEventDestroy(start));
+    start = nullptr;
+    N2WOS_CUDA_CHECK(cudaEventDestroy(stop));
+    stop = nullptr;
+    cudaFree(d_points);
+    cudaFree(d_inside);
+    cudaFree(d_sample_value);
+    cudaFree(d_step_count);
+    cudaFree(d_forced_max_steps);
+    cudaFree(d_query_overflow);
+    return result;
+  } catch (...) {
+    if (start) cudaEventDestroy(start);
+    if (stop) cudaEventDestroy(stop);
+    if (d_points) cudaFree(d_points);
+    if (d_inside) cudaFree(d_inside);
+    if (d_sample_value) cudaFree(d_sample_value);
+    if (d_step_count) cudaFree(d_step_count);
+    if (d_forced_max_steps) cudaFree(d_forced_max_steps);
+    if (d_query_overflow) cudaFree(d_query_overflow);
+    throw;
+  }
+}
+
+namespace {
+
+constexpr int kNcBcHarmonic = 0;
+constexpr int kNcBcExternalMedium = 1;
+constexpr int kNcBcExternalHigh = 2;
+constexpr int kNcLabelExact = 0;
+constexpr int kNcLabelWos = 1;
+
+__host__ __device__ inline float nc_safe_sqrt(float r2) {
+  return sqrtf(fmaxf(r2, 1.0e-12f));
+}
+
+__host__ __device__ inline float nc_boundary_device(DeviceVec3 p, int mode) {
+  if (mode == kNcBcHarmonic) return p.x * p.x - p.y * p.y;
+  float value = 0.0f;
+#define N2WOS_ADD_CHARGE(q, ax, ay, az) \
+  do { \
+    const float dx__ = p.x - (ax); \
+    const float dy__ = p.y - (ay); \
+    const float dz__ = p.z - (az); \
+    value += (q) / nc_safe_sqrt(dx__ * dx__ + dy__ * dy__ + dz__ * dz__); \
+  } while (false)
+  if (mode == kNcBcExternalHigh) {
+    N2WOS_ADD_CHARGE( 1.20f,  1.18f,  0.16f,  0.10f);
+    N2WOS_ADD_CHARGE(-1.00f, -1.16f, -0.20f,  0.22f);
+    N2WOS_ADD_CHARGE( 0.85f,  0.08f,  1.17f, -0.30f);
+    N2WOS_ADD_CHARGE(-0.70f, -0.18f, -1.18f,  0.36f);
+    N2WOS_ADD_CHARGE( 0.58f,  0.35f, -0.20f,  1.19f);
+    N2WOS_ADD_CHARGE(-0.53f, -0.38f,  0.24f, -1.19f);
+    N2WOS_ADD_CHARGE( 0.32f,  0.90f, -0.82f,  0.70f);
+    N2WOS_ADD_CHARGE(-0.30f, -0.86f,  0.78f, -0.66f);
+  } else {
+    N2WOS_ADD_CHARGE( 1.00f,  1.55f,  0.30f,  0.18f);
+    N2WOS_ADD_CHARGE(-0.85f, -1.45f, -0.28f,  0.36f);
+    N2WOS_ADD_CHARGE( 0.55f,  0.20f,  1.48f, -0.42f);
+    N2WOS_ADD_CHARGE(-0.45f, -0.34f, -1.52f,  0.24f);
+  }
+#undef N2WOS_ADD_CHARGE
+  return value;
+}
+
+__host__ __device__ inline DeviceVec3 nc_make_device_vec3(float x, float y, float z) {
+  DeviceVec3 p{x, y, z};
+  return p;
+}
+
+__host__ __device__ inline float nc_clamp01(float v) {
+  return fminf(1.0f, fmaxf(0.0f, v));
+}
+
+__host__ __device__ inline DeviceVec3 nc_map_to_unit(DeviceVec3 p, DeviceVec3 input_min, DeviceVec3 input_extent) {
+  return nc_make_device_vec3(nc_clamp01((p.x - input_min.x) / fmaxf(input_extent.x, 1.0e-6f)),
+                             nc_clamp01((p.y - input_min.y) / fmaxf(input_extent.y, 1.0e-6f)),
+                             nc_clamp01((p.z - input_min.z) / fmaxf(input_extent.z, 1.0e-6f)));
+}
+
+__device__ inline float nc_wos_from_point(DeviceVec3 p,
+                                          std::uint64_t* rng,
+                                          int max_steps,
+                                          float epsilon,
+                                          float step_scale,
+                                          int boundary_mode,
+                                          const cuBQL::Triangle* triangles,
+                                          cuBQL::bvh3f bvh,
+                                          int* steps_taken,
+                                          int* forced_flag,
+                                          int* overflow_flag) {
+  *steps_taken = 0;
+  *forced_flag = 0;
+  *overflow_flag = 0;
+  for (int step = 0; step <= max_steps; ++step) {
+    cuBQL::triangles::CPAT cpat;
+    cpat.runQuery(triangles, bvh, to_cubql_vec3(p));
+    const float d = sqrtf(fmaxf(cpat.sqrDist, 0.0f));
+    const bool forced = step >= max_steps;
+    if (d <= epsilon || forced || !isfinite(d)) {
+      *steps_taken = step;
+      *forced_flag = forced ? 1 : 0;
+      return nc_boundary_device(from_cubql_vec3(cpat.P), boundary_mode);
+    }
+    const DeviceVec3 dir = persistent_sample_unit_sphere(rng);
+    const float radius = step_scale * d;
+    p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
+  }
+  *steps_taken = max_steps;
+  *forced_flag = 1;
+  return nc_boundary_device(p, boundary_mode);
+}
+
+__global__ void nc_fill_inputs_kernel(const DeviceVec3* __restrict__ world_points,
+                                      int point_count,
+                                      DeviceVec3 input_min,
+                                      DeviceVec3 input_extent,
+                                      float* __restrict__ inputs) {
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= point_count) return;
+  const DeviceVec3 u = nc_map_to_unit(world_points[tid], input_min, input_extent);
+  inputs[3 * tid + 0] = u.x;
+  inputs[3 * tid + 1] = u.y;
+  inputs[3 * tid + 2] = u.z;
+}
+
+__global__ void nc_update_labels_kernel(const DeviceVec3* __restrict__ world_points,
+                                        int point_count,
+                                        int walks_per_point,
+                                        int max_steps,
+                                        float epsilon,
+                                        float step_scale,
+                                        std::uint64_t seed,
+                                        int refresh_index,
+                                        int boundary_mode,
+                                        int label_source,
+                                        DeviceVec3 input_min,
+                                        DeviceVec3 input_extent,
+                                        const cuBQL::Triangle* __restrict__ triangles,
+                                        cuBQL::bvh3f bvh,
+                                        float* __restrict__ inputs,
+                                        float* __restrict__ targets,
+                                        int* __restrict__ counts) {
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= point_count) return;
+  const DeviceVec3 p0 = world_points[tid];
+  const DeviceVec3 u = nc_map_to_unit(p0, input_min, input_extent);
+  inputs[3 * tid + 0] = u.x;
+  inputs[3 * tid + 1] = u.y;
+  inputs[3 * tid + 2] = u.z;
+
+  float y = 0.0f;
+  int add_count = 1;
+  if (label_source == kNcLabelExact) {
+    y = nc_boundary_device(p0, boundary_mode);
+  } else {
+    const int walks = walks_per_point > 1 ? walks_per_point : 1;
+    add_count = walks;
+    float sum = 0.0f;
+    for (int w = 0; w < walks; ++w) {
+      std::uint64_t rng = persistent_splitmix64(seed ^ (static_cast<std::uint64_t>(tid + 1) * 0x9e3779b97f4a7c15ull) ^
+                                               (static_cast<std::uint64_t>(refresh_index + 1) * 0xbf58476d1ce4e5b9ull) ^
+                                               (static_cast<std::uint64_t>(w + 1) * 0x94d049bb133111ebull));
+      if (!rng) rng = 0x853c49e6748fea9bull;
+      int steps = 0, forced = 0, overflow = 0;
+      sum += nc_wos_from_point(p0, &rng, max_steps, epsilon, step_scale, boundary_mode, triangles, bvh, &steps, &forced, &overflow);
+    }
+    y = sum / static_cast<float>(walks);
+  }
+  const int old_count = max(0, counts[tid]);
+  const int new_count = old_count + add_count;
+  const float old_total = targets[tid] * static_cast<float>(old_count);
+  targets[tid] = (old_total + y * static_cast<float>(add_count)) / static_cast<float>(new_count);
+  counts[tid] = new_count;
+}
+
+__global__ void nc_pure_wos_samples_kernel(const DeviceVec3* __restrict__ eval_points,
+                                           int eval_count,
+                                           int walks_per_point,
+                                           int max_steps,
+                                           float epsilon,
+                                           float step_scale,
+                                           std::uint64_t seed,
+                                           int boundary_mode,
+                                           const cuBQL::Triangle* __restrict__ triangles,
+                                           cuBQL::bvh3f bvh,
+                                           float* __restrict__ sample_values,
+                                           int* __restrict__ step_count,
+                                           int* __restrict__ forced_max_steps,
+                                           int* __restrict__ query_overflow) {
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const int total = eval_count * walks_per_point;
+  if (tid >= total) return;
+  const int point_id = tid / walks_per_point;
+  const int walk_id = tid - point_id * walks_per_point;
+  std::uint64_t rng = persistent_splitmix64(seed ^ (static_cast<std::uint64_t>(point_id + 1) * 0x9e3779b97f4a7c15ull) ^
+                                           (static_cast<std::uint64_t>(walk_id + 1) * 0xbf58476d1ce4e5b9ull));
+  if (!rng) rng = 0x853c49e6748fea9bull;
+  int steps = 0, forced = 0, overflow = 0;
+  sample_values[tid] = nc_wos_from_point(eval_points[point_id], &rng, max_steps, epsilon, step_scale, boundary_mode, triangles, bvh, &steps, &forced, &overflow);
+  step_count[tid] = steps;
+  forced_max_steps[tid] = forced;
+  query_overflow[tid] = overflow;
+}
+
+__global__ void nc_hybrid_prefix_kernel(const DeviceVec3* __restrict__ eval_points,
+                                        int eval_count,
+                                        int walks_per_point,
+                                        int depth_m,
+                                        int max_steps,
+                                        float epsilon,
+                                        float step_scale,
+                                        std::uint64_t seed,
+                                        int boundary_mode,
+                                        DeviceVec3 input_min,
+                                        DeviceVec3 input_extent,
+                                        const cuBQL::Triangle* __restrict__ triangles,
+                                        cuBQL::bvh3f bvh,
+                                        float* __restrict__ prefix_inputs,
+                                        float* __restrict__ boundary_values,
+                                        std::uint8_t* __restrict__ needs_cache,
+                                        int* __restrict__ step_count,
+                                        int* __restrict__ forced_max_steps,
+                                        int* __restrict__ query_overflow) {
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const int total = eval_count * walks_per_point;
+  if (tid >= total) return;
+  const int point_id = tid / walks_per_point;
+  const int walk_id = tid - point_id * walks_per_point;
+  std::uint64_t rng = persistent_splitmix64(seed ^ (static_cast<std::uint64_t>(point_id + 1) * 0x9e3779b97f4a7c15ull) ^
+                                           (static_cast<std::uint64_t>(walk_id + 1) * 0xbf58476d1ce4e5b9ull));
+  if (!rng) rng = 0x853c49e6748fea9bull;
+  DeviceVec3 p = eval_points[point_id];
+  query_overflow[tid] = 0;
+  forced_max_steps[tid] = 0;
+  step_count[tid] = 0;
+  boundary_values[tid] = 0.0f;
+  needs_cache[tid] = 0;
+  for (int step = 0; step <= max_steps; ++step) {
+    cuBQL::triangles::CPAT cpat;
+    cpat.runQuery(triangles, bvh, to_cubql_vec3(p));
+    const float d = sqrtf(fmaxf(cpat.sqrDist, 0.0f));
+    const bool forced = step >= max_steps;
+    if (d <= epsilon || forced || !isfinite(d)) {
+      boundary_values[tid] = nc_boundary_device(from_cubql_vec3(cpat.P), boundary_mode);
+      step_count[tid] = step;
+      forced_max_steps[tid] = forced ? 1 : 0;
+      needs_cache[tid] = 0;
+      const DeviceVec3 u = nc_map_to_unit(p, input_min, input_extent);
+      prefix_inputs[3 * tid + 0] = u.x;
+      prefix_inputs[3 * tid + 1] = u.y;
+      prefix_inputs[3 * tid + 2] = u.z;
+      return;
+    }
+    if (step >= depth_m) {
+      const DeviceVec3 u = nc_map_to_unit(p, input_min, input_extent);
+      prefix_inputs[3 * tid + 0] = u.x;
+      prefix_inputs[3 * tid + 1] = u.y;
+      prefix_inputs[3 * tid + 2] = u.z;
+      needs_cache[tid] = 1;
+      step_count[tid] = step;
+      return;
+    }
+    const DeviceVec3 dir = persistent_sample_unit_sphere(&rng);
+    const float radius = step_scale * d;
+    p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
+  }
+}
+
+int nc_boundary_to_device(NcBoundaryMode mode) {
+  switch (mode) {
+    case NcBoundaryMode::HarmonicX2MinusY2: return kNcBcHarmonic;
+    case NcBoundaryMode::ExternalChargesMedium: return kNcBcExternalMedium;
+    case NcBoundaryMode::ExternalChargesHigh: return kNcBcExternalHigh;
+  }
+  throw std::runtime_error("unknown NC boundary mode");
+}
+
+int nc_label_to_device(NcLabelSource source) {
+  switch (source) {
+    case NcLabelSource::ExactAnalytic: return kNcLabelExact;
+    case NcLabelSource::WosSupervision: return kNcLabelWos;
+  }
+  throw std::runtime_error("unknown NC label source");
+}
+
+DeviceVec3 nc_device(Vec3f p) { return DeviceVec3{p.x, p.y, p.z}; }
+
+void validate_nc_dataset(const NcDeviceDatasetOptions& options) {
+  if (options.point_count < 0) throw std::runtime_error("point_count must be non-negative");
+  if (options.walks_per_point <= 0) throw std::runtime_error("walks_per_point must be positive");
+  if (options.max_steps <= 0) throw std::runtime_error("max_steps must be positive");
+  if (!(options.epsilon > 0.0f)) throw std::runtime_error("epsilon must be positive");
+  if (!(options.step_scale > 0.0f && options.step_scale <= 1.0f)) throw std::runtime_error("step_scale must be in (0,1]");
+  if (options.block_size <= 0 || options.block_size > 1024) throw std::runtime_error("block_size must be in [1,1024]");
+}
+
+void validate_nc_sample(const NcDeviceSampleOptions& options) {
+  if (options.eval_point_count < 0) throw std::runtime_error("eval_point_count must be non-negative");
+  if (options.walks_per_point <= 0) throw std::runtime_error("walks_per_point must be positive");
+  if (options.depth_m < 0) throw std::runtime_error("depth_m must be non-negative");
+  if (options.max_steps <= 0) throw std::runtime_error("max_steps must be positive");
+  if (!(options.epsilon > 0.0f)) throw std::runtime_error("epsilon must be positive");
+  if (!(options.step_scale > 0.0f && options.step_scale <= 1.0f)) throw std::runtime_error("step_scale must be in (0,1]");
+  if (options.block_size <= 0 || options.block_size > 1024) throw std::runtime_error("block_size must be in [1,1024]");
+}
+
+}  // namespace
+
+const char* nc_boundary_mode_name(NcBoundaryMode mode) {
+  switch (mode) {
+    case NcBoundaryMode::HarmonicX2MinusY2: return "harmonic_x2_minus_y2";
+    case NcBoundaryMode::ExternalChargesMedium: return "external_charges_medium";
+    case NcBoundaryMode::ExternalChargesHigh: return "external_charges_high";
+  }
+  return "unknown";
+}
+
+NcBoundaryMode parse_nc_boundary_mode(const char* text) {
+  const std::string s(text ? text : "");
+  if (s == "harmonic" || s == "harmonic_x2_minus_y2") return NcBoundaryMode::HarmonicX2MinusY2;
+  if (s == "medium" || s == "external_charges_medium" || s == "charges_medium") return NcBoundaryMode::ExternalChargesMedium;
+  if (s == "high" || s == "external_charges_high" || s == "charges_high") return NcBoundaryMode::ExternalChargesHigh;
+  throw std::runtime_error("unknown NC boundary mode: " + s);
+}
+
+const char* nc_label_source_name(NcLabelSource source) {
+  switch (source) {
+    case NcLabelSource::ExactAnalytic: return "exact_analytic";
+    case NcLabelSource::WosSupervision: return "wos_supervision";
+  }
+  return "unknown";
+}
+
+NcLabelSource parse_nc_label_source(const char* text) {
+  const std::string s(text ? text : "");
+  if (s == "exact" || s == "exact_analytic") return NcLabelSource::ExactAnalytic;
+  if (s == "wos" || s == "wos_supervision") return NcLabelSource::WosSupervision;
+  throw std::runtime_error("unknown NC label source: " + s);
+}
+
+float nc_boundary_value_host(Vec3f p, NcBoundaryMode mode) {
+  return nc_boundary_device(DeviceVec3{p.x, p.y, p.z}, nc_boundary_to_device(mode));
+}
+
+void launch_nc_fill_inputs(const NcDeviceDatasetOptions& options,
+                           float* d_inputs,
+                           cudaStream_t stream) {
+  validate_nc_dataset(options);
+  if (options.point_count == 0) return;
+  if (!options.d_world_points || !d_inputs) throw std::runtime_error("launch_nc_fill_inputs received a null pointer");
+  const int block = options.block_size;
+  const int grid = (options.point_count + block - 1) / block;
+  nc_fill_inputs_kernel<<<grid, block, 0, stream>>>(options.d_world_points, options.point_count, nc_device(options.input_min), nc_device(options.input_extent), d_inputs);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_nc_update_labels(const CuBqlBvh& bvh,
+                             const NcDeviceDatasetOptions& options,
+                             float* d_inputs,
+                             float* d_targets,
+                             int* d_counts,
+                             cudaStream_t stream) {
+  validate_nc_dataset(options);
+  if (options.point_count == 0) return;
+  if (!bvh.impl_ || !bvh.impl_->d_triangles || !bvh.impl_->bvh.nodes || !bvh.impl_->bvh.primIDs) throw std::runtime_error("empty cuBQL BVH in launch_nc_update_labels");
+  if (!options.d_world_points || !d_inputs || !d_targets || !d_counts) throw std::runtime_error("launch_nc_update_labels received a null pointer");
+  const int block = options.block_size;
+  const int grid = (options.point_count + block - 1) / block;
+  nc_update_labels_kernel<<<grid, block, 0, stream>>>(options.d_world_points,
+                                                      options.point_count,
+                                                      options.walks_per_point,
+                                                      options.max_steps,
+                                                      options.epsilon,
+                                                      options.step_scale,
+                                                      options.seed,
+                                                      options.refresh_index,
+                                                      nc_boundary_to_device(options.boundary_mode),
+                                                      nc_label_to_device(options.label_source),
+                                                      nc_device(options.input_min),
+                                                      nc_device(options.input_extent),
+                                                      bvh.impl_->d_triangles,
+                                                      bvh.impl_->bvh,
+                                                      d_inputs,
+                                                      d_targets,
+                                                      d_counts);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_nc_pure_wos_samples(const CuBqlBvh& bvh,
+                                const NcDeviceSampleOptions& options,
+                                float* d_sample_values,
+                                int* d_step_count,
+                                int* d_forced_max_steps,
+                                int* d_query_overflow,
+                                cudaStream_t stream) {
+  validate_nc_sample(options);
+  if (options.eval_point_count == 0) return;
+  if (!bvh.impl_ || !bvh.impl_->d_triangles || !bvh.impl_->bvh.nodes || !bvh.impl_->bvh.primIDs) throw std::runtime_error("empty cuBQL BVH in launch_nc_pure_wos_samples");
+  if (!options.d_eval_points || !d_sample_values || !d_step_count || !d_forced_max_steps || !d_query_overflow) throw std::runtime_error("launch_nc_pure_wos_samples received a null pointer");
+  const int total = options.eval_point_count * options.walks_per_point;
+  const int block = options.block_size;
+  const int grid = (total + block - 1) / block;
+  nc_pure_wos_samples_kernel<<<grid, block, 0, stream>>>(options.d_eval_points,
+                                                         options.eval_point_count,
+                                                         options.walks_per_point,
+                                                         options.max_steps,
+                                                         options.epsilon,
+                                                         options.step_scale,
+                                                         options.seed,
+                                                         nc_boundary_to_device(options.boundary_mode),
+                                                         bvh.impl_->d_triangles,
+                                                         bvh.impl_->bvh,
+                                                         d_sample_values,
+                                                         d_step_count,
+                                                         d_forced_max_steps,
+                                                         d_query_overflow);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_nc_hybrid_prefix(const CuBqlBvh& bvh,
+                             const NcDeviceSampleOptions& options,
+                             float* d_prefix_inputs,
+                             float* d_boundary_values,
+                             std::uint8_t* d_needs_cache,
+                             int* d_step_count,
+                             int* d_forced_max_steps,
+                             int* d_query_overflow,
+                             cudaStream_t stream) {
+  validate_nc_sample(options);
+  if (options.eval_point_count == 0) return;
+  if (!bvh.impl_ || !bvh.impl_->d_triangles || !bvh.impl_->bvh.nodes || !bvh.impl_->bvh.primIDs) throw std::runtime_error("empty cuBQL BVH in launch_nc_hybrid_prefix");
+  if (!options.d_eval_points || !d_prefix_inputs || !d_boundary_values || !d_needs_cache || !d_step_count || !d_forced_max_steps || !d_query_overflow) throw std::runtime_error("launch_nc_hybrid_prefix received a null pointer");
+  const int total = options.eval_point_count * options.walks_per_point;
+  const int block = options.block_size;
+  const int grid = (total + block - 1) / block;
+  nc_hybrid_prefix_kernel<<<grid, block, 0, stream>>>(options.d_eval_points,
+                                                      options.eval_point_count,
+                                                      options.walks_per_point,
+                                                      options.depth_m,
+                                                      options.max_steps,
+                                                      options.epsilon,
+                                                      options.step_scale,
+                                                      options.seed,
+                                                      nc_boundary_to_device(options.boundary_mode),
+                                                      nc_device(options.input_min),
+                                                      nc_device(options.input_extent),
+                                                      bvh.impl_->d_triangles,
+                                                      bvh.impl_->bvh,
+                                                      d_prefix_inputs,
+                                                      d_boundary_values,
+                                                      d_needs_cache,
+                                                      d_step_count,
+                                                      d_forced_max_steps,
+                                                      d_query_overflow);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
 }
 
 }  // namespace n2wos

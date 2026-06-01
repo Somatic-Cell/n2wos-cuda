@@ -152,8 +152,23 @@ if(N2WOS_HAS_CUBQL)
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
     $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 
+  add_executable(n2wos_render_harmonic_slice
+    src/tools/render_harmonic_slice.cu)
+
+  target_link_libraries(n2wos_render_harmonic_slice
+    PRIVATE
+      n2wos_wavefront
+      n2wos_cuda)
+
+  set_target_properties(n2wos_render_harmonic_slice PROPERTIES
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+  target_compile_options(n2wos_render_harmonic_slice PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+
   install(TARGETS n2wos_wavefront ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(TARGETS n2wos_eval_wavefront_wos RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(TARGETS n2wos_eval_wavefront_wos n2wos_render_harmonic_slice RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 if(N2WOS_HAS_TCNN)
@@ -178,4 +193,28 @@ if(N2WOS_HAS_TCNN)
     $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 
   install(TARGETS n2wos_probe_tcnn_cache RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+  if(N2WOS_HAS_CUBQL)
+    add_executable(n2wos_eval_tcnn_nc_wos
+      src/tools/eval_tcnn_nc_wos.cu)
+
+    target_link_libraries(n2wos_eval_tcnn_nc_wos
+      PRIVATE
+        n2wos_cubql
+        CUDA::cudart
+        CUDA::cuda_driver
+        CUDA::nvrtc
+        tiny-cuda-nn)
+
+    target_compile_definitions(n2wos_eval_tcnn_nc_wos PRIVATE N2WOS_HAS_CUBQL=1 N2WOS_HAS_TCNN=1)
+    set_target_properties(n2wos_eval_tcnn_nc_wos PROPERTIES
+      CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+    target_compile_options(n2wos_eval_tcnn_nc_wos PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+      $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+      $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+
+    install(TARGETS n2wos_eval_tcnn_nc_wos RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  endif()
 endif()

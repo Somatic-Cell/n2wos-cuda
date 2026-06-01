@@ -1,0 +1,20 @@
+{
+  "executable": "./build/cuda-release-cubql/n2wos_render_harmonic_slice",
+  "mesh": "procedural_bumpy_sphere",
+  "mesh_path": "",
+  "normalize": true,
+  "width": 128,
+  "height": 128,
+  "samples_per_pixel": 256,
+  "slice_view": "xy",
+  "plane_z": 0.0,
+  "preserve_world_aspect": true,
+  "mask_outside_mesh": true,
+  "max_steps": 256,
+  "epsilon": 1e-4,
+  "step_scale": 0.999,
+  "seed": 12345,
+  "cubql_build_method": "sah",
+  "cubql_leaf_size": 8,
+  "output_prefix": "results/harmonic_slice_bumpy"
+}
