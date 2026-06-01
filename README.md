@@ -151,3 +151,41 @@ The timing scope is device query kernel-only. Query points are uploaded once bef
 ## Mesh input
 
 Patch 0002b adds a lightweight PLY loader for Stanford-style triangle meshes. Supported formats are ASCII and binary little-endian PLY files with `vertex` x/y/z properties and polygonal `face` vertex index lists. Faces with more than three vertices are triangulated by a fan. Binary big-endian PLY is rejected; convert it before use. OBJ loading remains available for small tests. cuBQL builds and queries BVHs from the loaded triangle mesh, but it does not import mesh files.
+
+
+## Patch 0003 scope
+
+`0003-add-tcnn-device-resident-cache-probe.patch` adds optional native tiny-cuda-nn integration. It does not add WoS yet. The new executable verifies the cache interface needed by NC and NC+2LMC:
+
+- GPU-side generation of training and inference point batches.
+- tiny-cuda-nn C++/CUDA training on a small HashGrid + MLP cache.
+- tiny-cuda-nn C++/CUDA inference from a GPU input matrix to a GPU output matrix.
+- A downstream CUDA kernel consumes the output without a CPU transfer between TCNN and the consumer.
+- JSON labels explicitly reject Python bindings and CSV postprocess as production cache paths.
+
+Fetch tiny-cuda-nn recursively:
+
+```bash
+python3 scripts/fetch_tcnn.py --dest external/tiny-cuda-nn
+```
+
+Build the TCNN probe:
+
+```bash
+rm -rf build/cuda-release-tcnn
+cmake --preset cuda-release-tcnn
+cmake --build --preset cuda-release-tcnn -j
+```
+
+Run it:
+
+```bash
+./build/cuda-release-tcnn/n2wos_probe_tcnn_cache \
+  --samples 262144 \
+  --batch-size 262144 \
+  --train-steps 200 \
+  --repeat 20 \
+  --output results/probe_tcnn_cache.json
+```
+
+Use `cuda-release-cubql-tcnn` when geometry and cache probes should be built in the same tree.

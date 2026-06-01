@@ -1,0 +1,13 @@
+{
+  "schema": "n2wos_probe_tcnn_cache_config_v1",
+  "description": "Default tiny-cuda-nn device-resident cache probe. The probe generates training and inference batches on the GPU, trains a small HashGrid+MLP cache, performs native C++ TCNN inference into a GPU output buffer, and lets a downstream CUDA kernel consume the output without an intermediate CPU transfer.",
+  "recommended_command": "./build/cuda-release-tcnn/n2wos_probe_tcnn_cache --samples 262144 --batch-size 262144 --train-steps 200 --repeat 20 --output results/probe_tcnn_cache.json",
+  "default_policy": {
+    "python_bindings": false,
+    "csv_postprocess": false,
+    "training_batch_generation": "cuda_kernel",
+    "inference_input_location": "cuda_device_memory",
+    "inference_output_location": "cuda_device_memory",
+    "downstream_consumer": "cuda_kernel"
+  }
+}

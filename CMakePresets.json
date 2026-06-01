@@ -37,6 +37,32 @@
         "N2WOS_ENABLE_CUBQL": "ON",
         "N2WOS_CUBQL_DIR": "${sourceDir}/external/cuBQL"
       }
+    },
+    {
+      "name": "cuda-release-tcnn",
+      "displayName": "CUDA Release with tiny-cuda-nn",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cuda-release-tcnn",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "86",
+        "N2WOS_ENABLE_TCNN": "ON",
+        "N2WOS_TCNN_DIR": "${sourceDir}/external/tiny-cuda-nn"
+      }
+    },
+    {
+      "name": "cuda-release-cubql-tcnn",
+      "displayName": "CUDA Release with cuBQL and tiny-cuda-nn",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cuda-release-cubql-tcnn",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "86",
+        "N2WOS_ENABLE_CUBQL": "ON",
+        "N2WOS_CUBQL_DIR": "${sourceDir}/external/cuBQL",
+        "N2WOS_ENABLE_TCNN": "ON",
+        "N2WOS_TCNN_DIR": "${sourceDir}/external/tiny-cuda-nn"
+      }
     }
   ],
   "buildPresets": [
@@ -51,6 +77,14 @@
     {
       "name": "cuda-release-cubql",
       "configurePreset": "cuda-release-cubql"
+    },
+    {
+      "name": "cuda-release-tcnn",
+      "configurePreset": "cuda-release-tcnn"
+    },
+    {
+      "name": "cuda-release-cubql-tcnn",
+      "configurePreset": "cuda-release-cubql-tcnn"
     }
   ]
 }

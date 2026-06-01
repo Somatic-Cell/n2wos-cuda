@@ -112,3 +112,25 @@ target_compile_options(n2wos_probe_geometry_backends PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 
 install(TARGETS n2wos_probe_geometry_backends RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(N2WOS_HAS_TCNN)
+  add_executable(n2wos_probe_tcnn_cache
+    src/tools/probe_tcnn_cache.cu)
+
+  target_link_libraries(n2wos_probe_tcnn_cache
+    PRIVATE
+      n2wos_core
+      CUDA::cudart
+      tiny-cuda-nn)
+
+  target_compile_definitions(n2wos_probe_tcnn_cache PRIVATE N2WOS_HAS_TCNN=1)
+  set_target_properties(n2wos_probe_tcnn_cache PROPERTIES
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+  target_compile_options(n2wos_probe_tcnn_cache PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+
+  install(TARGETS n2wos_probe_tcnn_cache RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
