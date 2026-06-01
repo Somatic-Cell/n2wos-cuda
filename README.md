@@ -278,3 +278,34 @@ cmake --build --preset cuda-release-cubql-tcnn -j
 The training schedule is fixed. WoS supervision updates each point's target as a
 running average, then tiny-cuda-nn trains against that target. This executable is
 a biased NC/NC+WoS screening experiment, not the unbiased 2LMC residual path.
+
+### 0006 TCNN NC+2LMC m=1 diagnostic
+
+Patch 0006 keeps the same `n2wos_eval_tcnn_nc_wos` executable and adds an m=1
+NC+2LMC estimator using the same trained TCNN cache as biased NC+WoS. The main
+comparison therefore uses the same mesh, boundary condition, evaluation points,
+geometry backend, cache snapshot, and prefix depth.
+
+```bash
+./build/cuda-release-cubql-tcnn/n2wos_eval_tcnn_nc_wos \
+  --mesh procedural_bumpy_sphere \
+  --boundary external_charges_high \
+  --label-source wos_supervision \
+  --cache-preset light \
+  --train-points 20000 \
+  --eval-points 8192 \
+  --label-refreshes 4 \
+  --walks-per-label-refresh 16 \
+  --train-steps-per-refresh 1000 \
+  --pure-walks-per-point 64 \
+  --hybrid-walks-per-point 4 \
+  --coarse-walks-per-point 64 \
+  --residual-walks-per-point 4 \
+  --depth-m 1 \
+  --cubql-build-method sah \
+  --output results/eval_tcnn_nc_2lmc_m1_light_bumpy_high.json
+```
+
+The JSON contains `pure_wos`, biased `nc_wos`, and `nc_2lmc_m1`. Training time is
+reported separately and also included in total timings. `cache-preset light` and
+`cache-preset baseline` are intended for the first bias-floor comparison.

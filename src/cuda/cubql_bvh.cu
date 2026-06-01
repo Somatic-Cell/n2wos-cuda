@@ -1230,6 +1230,12 @@ __host__ __device__ inline DeviceVec3 nc_map_to_unit(DeviceVec3 p, DeviceVec3 in
                              nc_clamp01((p.z - input_min.z) / fmaxf(input_extent.z, 1.0e-6f)));
 }
 
+__host__ __device__ inline DeviceVec3 nc_unmap_from_unit(const float* inputs, int tid, DeviceVec3 input_min, DeviceVec3 input_extent) {
+  return nc_make_device_vec3(input_min.x + inputs[3 * tid + 0] * input_extent.x,
+                             input_min.y + inputs[3 * tid + 1] * input_extent.y,
+                             input_min.z + inputs[3 * tid + 2] * input_extent.z);
+}
+
 __device__ inline float nc_wos_from_point(DeviceVec3 p,
                                           std::uint64_t* rng,
                                           int max_steps,
@@ -1419,6 +1425,112 @@ __global__ void nc_hybrid_prefix_kernel(const DeviceVec3* __restrict__ eval_poin
   }
 }
 
+
+__global__ void nc_2lmc_prefix_continue_kernel(const DeviceVec3* __restrict__ eval_points,
+                                               int eval_count,
+                                               int walks_per_point,
+                                               int depth_m,
+                                               int max_steps,
+                                               float epsilon,
+                                               float step_scale,
+                                               std::uint64_t seed,
+                                               int boundary_mode,
+                                               DeviceVec3 input_min,
+                                               DeviceVec3 input_extent,
+                                               const cuBQL::Triangle* __restrict__ triangles,
+                                               cuBQL::bvh3f bvh,
+                                               float* __restrict__ prefix_inputs,
+                                               float* __restrict__ boundary_values,
+                                               float* __restrict__ continuation_values,
+                                               std::uint8_t* __restrict__ needs_cache,
+                                               int* __restrict__ step_count,
+                                               int* __restrict__ forced_max_steps,
+                                               int* __restrict__ query_overflow) {
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const int total = eval_count * walks_per_point;
+  if (tid >= total) return;
+  const int point_id = tid / walks_per_point;
+  const int walk_id = tid - point_id * walks_per_point;
+  std::uint64_t rng = persistent_splitmix64(seed ^ (static_cast<std::uint64_t>(point_id + 1) * 0x6a09e667f3bcc909ull) ^
+                                           (static_cast<std::uint64_t>(walk_id + 1) * 0xbb67ae8584caa73bull));
+  if (!rng) rng = 0x853c49e6748fea9bull;
+
+  DeviceVec3 p = eval_points[point_id];
+  query_overflow[tid] = 0;
+  forced_max_steps[tid] = 0;
+  step_count[tid] = 0;
+  boundary_values[tid] = 0.0f;
+  continuation_values[tid] = 0.0f;
+  needs_cache[tid] = 0;
+
+  for (int step = 0; step <= max_steps; ++step) {
+    cuBQL::triangles::CPAT cpat;
+    cpat.runQuery(triangles, bvh, to_cubql_vec3(p));
+    const float d = sqrtf(fmaxf(cpat.sqrDist, 0.0f));
+    const bool forced = step >= max_steps;
+    if (d <= epsilon || forced || !isfinite(d)) {
+      const float boundary = nc_boundary_device(from_cubql_vec3(cpat.P), boundary_mode);
+      const DeviceVec3 u = nc_map_to_unit(p, input_min, input_extent);
+      prefix_inputs[3 * tid + 0] = u.x;
+      prefix_inputs[3 * tid + 1] = u.y;
+      prefix_inputs[3 * tid + 2] = u.z;
+      boundary_values[tid] = boundary;
+      continuation_values[tid] = boundary;
+      needs_cache[tid] = 0;
+      step_count[tid] = step;
+      forced_max_steps[tid] = forced ? 1 : 0;
+      return;
+    }
+
+    if (step >= depth_m) {
+      const DeviceVec3 u = nc_map_to_unit(p, input_min, input_extent);
+      prefix_inputs[3 * tid + 0] = u.x;
+      prefix_inputs[3 * tid + 1] = u.y;
+      prefix_inputs[3 * tid + 2] = u.z;
+      needs_cache[tid] = 1;
+      int cont_steps = 0, cont_forced = 0, cont_overflow = 0;
+      continuation_values[tid] = nc_wos_from_point(p,
+                                                   &rng,
+                                                   max_steps,
+                                                   epsilon,
+                                                   step_scale,
+                                                   boundary_mode,
+                                                   triangles,
+                                                   bvh,
+                                                   &cont_steps,
+                                                   &cont_forced,
+                                                   &cont_overflow);
+      step_count[tid] = step + cont_steps;
+      forced_max_steps[tid] = cont_forced;
+      query_overflow[tid] = cont_overflow;
+      return;
+    }
+
+    const DeviceVec3 dir = persistent_sample_unit_sphere(&rng);
+    const float radius = step_scale * d;
+    p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
+  }
+}
+
+__global__ void nc_combine_cache_and_residual_kernel(const float* __restrict__ cache_outputs,
+                                                     const float* __restrict__ boundary_values,
+                                                     const float* __restrict__ continuation_values,
+                                                     const std::uint8_t* __restrict__ needs_cache,
+                                                     int sample_count,
+                                                     float* __restrict__ nc_values,
+                                                     float* __restrict__ residual_values) {
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= sample_count) return;
+  if (needs_cache[tid]) {
+    const float c = cache_outputs[tid];
+    nc_values[tid] = c;
+    residual_values[tid] = continuation_values[tid] - c;
+  } else {
+    nc_values[tid] = boundary_values[tid];
+    residual_values[tid] = 0.0f;
+  }
+}
+
 int nc_boundary_to_device(NcBoundaryMode mode) {
   switch (mode) {
     case NcBoundaryMode::HarmonicX2MinusY2: return kNcBcHarmonic;
@@ -1605,6 +1717,69 @@ void launch_nc_hybrid_prefix(const CuBqlBvh& bvh,
                                                       d_step_count,
                                                       d_forced_max_steps,
                                                       d_query_overflow);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_nc_2lmc_prefix_continue(const CuBqlBvh& bvh,
+                                    const NcDeviceSampleOptions& options,
+                                    float* d_prefix_inputs,
+                                    float* d_boundary_values,
+                                    float* d_continuation_values,
+                                    std::uint8_t* d_needs_cache,
+                                    int* d_step_count,
+                                    int* d_forced_max_steps,
+                                    int* d_query_overflow,
+                                    cudaStream_t stream) {
+  validate_nc_sample(options);
+  if (options.eval_point_count == 0) return;
+  if (!bvh.impl_ || !bvh.impl_->d_triangles || !bvh.impl_->bvh.nodes || !bvh.impl_->bvh.primIDs) throw std::runtime_error("empty cuBQL BVH in launch_nc_2lmc_prefix_continue");
+  if (!options.d_eval_points || !d_prefix_inputs || !d_boundary_values || !d_continuation_values || !d_needs_cache || !d_step_count || !d_forced_max_steps || !d_query_overflow) throw std::runtime_error("launch_nc_2lmc_prefix_continue received a null pointer");
+  const int total = options.eval_point_count * options.walks_per_point;
+  const int block = options.block_size;
+  const int grid = (total + block - 1) / block;
+  nc_2lmc_prefix_continue_kernel<<<grid, block, 0, stream>>>(options.d_eval_points,
+                                                             options.eval_point_count,
+                                                             options.walks_per_point,
+                                                             options.depth_m,
+                                                             options.max_steps,
+                                                             options.epsilon,
+                                                             options.step_scale,
+                                                             options.seed,
+                                                             nc_boundary_to_device(options.boundary_mode),
+                                                             nc_device(options.input_min),
+                                                             nc_device(options.input_extent),
+                                                             bvh.impl_->d_triangles,
+                                                             bvh.impl_->bvh,
+                                                             d_prefix_inputs,
+                                                             d_boundary_values,
+                                                             d_continuation_values,
+                                                             d_needs_cache,
+                                                             d_step_count,
+                                                             d_forced_max_steps,
+                                                             d_query_overflow);
+  N2WOS_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_nc_combine_cache_and_residual(const float* d_cache_outputs,
+                                          const float* d_boundary_values,
+                                          const float* d_continuation_values,
+                                          const std::uint8_t* d_needs_cache,
+                                          int sample_count,
+                                          float* d_nc_values,
+                                          float* d_residual_values,
+                                          int block_size,
+                                          cudaStream_t stream) {
+  if (sample_count <= 0) return;
+  if (!d_cache_outputs || !d_boundary_values || !d_continuation_values || !d_needs_cache || !d_nc_values || !d_residual_values) throw std::runtime_error("launch_nc_combine_cache_and_residual received a null pointer");
+  if (block_size <= 0 || block_size > 1024) throw std::runtime_error("block_size must be in [1,1024]");
+  const int grid = (sample_count + block_size - 1) / block_size;
+  nc_combine_cache_and_residual_kernel<<<grid, block_size, 0, stream>>>(d_cache_outputs,
+                                                                       d_boundary_values,
+                                                                       d_continuation_values,
+                                                                       d_needs_cache,
+                                                                       sample_count,
+                                                                       d_nc_values,
+                                                                       d_residual_values);
   N2WOS_CUDA_CHECK(cudaGetLastError());
 }
 

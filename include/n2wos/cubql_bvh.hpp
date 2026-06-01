@@ -100,6 +100,16 @@ class CuBqlBvh {
                                       int* d_forced_max_steps,
                                       int* d_query_overflow,
                                       cudaStream_t stream);
+  friend void launch_nc_2lmc_prefix_continue(const CuBqlBvh& bvh,
+                                             const NcDeviceSampleOptions& options,
+                                             float* d_prefix_inputs,
+                                             float* d_boundary_values,
+                                             float* d_continuation_values,
+                                             std::uint8_t* d_needs_cache,
+                                             int* d_step_count,
+                                             int* d_forced_max_steps,
+                                             int* d_query_overflow,
+                                             cudaStream_t stream);
 
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -88,4 +88,32 @@ void launch_nc_hybrid_prefix(const CuBqlBvh& bvh,
                              int* d_query_overflow,
                              cudaStream_t stream = 0);
 
+// Prefix to depth_m, then continue from X_m to the boundary for the residual
+// term W(X_m)-C_theta(X_m). If the path reaches the boundary before depth_m,
+// d_needs_cache is 0, d_boundary_values and d_continuation_values are equal,
+// and the residual becomes zero after combination.
+void launch_nc_2lmc_prefix_continue(const CuBqlBvh& bvh,
+                                    const NcDeviceSampleOptions& options,
+                                    float* d_prefix_inputs,
+                                    float* d_boundary_values,
+                                    float* d_continuation_values,
+                                    std::uint8_t* d_needs_cache,
+                                    int* d_step_count,
+                                    int* d_forced_max_steps,
+                                    int* d_query_overflow,
+                                    cudaStream_t stream = 0);
+
+// Device-side consumer for tiny-cuda-nn outputs. It produces NC-only sample
+// values and residual sample values without routing TCNN outputs through host
+// memory.
+void launch_nc_combine_cache_and_residual(const float* d_cache_outputs,
+                                          const float* d_boundary_values,
+                                          const float* d_continuation_values,
+                                          const std::uint8_t* d_needs_cache,
+                                          int sample_count,
+                                          float* d_nc_values,
+                                          float* d_residual_values,
+                                          int block_size = 128,
+                                          cudaStream_t stream = 0);
+
 }  // namespace n2wos
