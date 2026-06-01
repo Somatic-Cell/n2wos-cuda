@@ -142,7 +142,8 @@ if(N2WOS_HAS_CUBQL)
 
   target_link_libraries(n2wos_eval_wavefront_wos
     PRIVATE
-      n2wos_wavefront)
+      n2wos_wavefront
+      n2wos_cuda)
 
   set_target_properties(n2wos_eval_wavefront_wos PROPERTIES
     CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
