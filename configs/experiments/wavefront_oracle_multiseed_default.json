@@ -1,0 +1,21 @@
+{
+  "schema": "n2wos_wavefront_oracle_multiseed_config_v1",
+  "executable": "./build/cuda-release-cubql/n2wos_eval_wavefront_wos",
+  "engine": "persistent",
+  "mesh": "procedural_bumpy_sphere",
+  "pure_samples": 262144,
+  "residual_samples": 65536,
+  "depths": [1, 2, 4, 8, 16],
+  "coarse_ratios": [1, 2, 4, 8],
+  "seeds": [12345, 23456, 34567, 45678, 56789],
+  "max_steps": 256,
+  "epsilon": 0.0001,
+  "step_scale": 0.999,
+  "x0": [0.1, 0.05, 0.0],
+  "cubql_build_method": "sah",
+  "cubql_leaf_size": 8,
+  "notes": [
+    "This config is for diagnosing single-point oracle 2LMC seed sensitivity.",
+    "It is not a final dense-field benchmark."
+  ]
+}

@@ -114,3 +114,47 @@ GPU reduction
 ```
 
 Use the same executable and method flags, adding `--engine persistent`.
+
+## 0004e oracle seed replication and residual diagnostics
+
+Single-seed oracle 2LMC sweeps can be misleading: the residual estimator has
+expectation zero but may show a visible offset for one RNG seed, especially when
+only 65k residual samples are used. Patch 0004e adds z-score diagnostics and
+multi-seed orchestration before any speedup claim is made.
+
+Recommended short diagnostic run:
+
+```bash
+python3 scripts/run_wavefront_oracle_sweep.py \
+  --executable ./build/cuda-release-cubql/n2wos_eval_wavefront_wos \
+  --engine persistent \
+  --output-dir results/persistent_oracle_seedcheck_bumpy \
+  --mesh procedural_bumpy_sphere \
+  --pure-samples 262144 \
+  --residual-samples 65536 \
+  --depths 1,4,8,16 \
+  --coarse-ratios 2,4 \
+  --seed-count 5 \
+  --max-steps 256 \
+  --epsilon 1e-4 \
+  --x0 0.1,0.05,0 \
+  --cubql-build-method sah \
+  --cubql-leaf-size 8
+```
+
+The full per-seed rows are written to `summary.csv`; grouped statistics are
+written to `summary_by_label.csv`. Inspect `estimator_z_abs_error`,
+`residual_z_abs_mean`, `large_estimator_z_count`, and
+`large_residual_z_count` before interpreting speedup columns.
+
+For a more explicit seed-by-seed directory layout, use:
+
+```bash
+python3 scripts/run_wavefront_oracle_multiseed.py \
+  --executable ./build/cuda-release-cubql/n2wos_eval_wavefront_wos \
+  --output-dir results/persistent_oracle_multiseed_bumpy \
+  --engine persistent \
+  --seeds 12345,23456,34567,45678,56789 \
+  --depths 1,4,8,16 \
+  --coarse-ratios 2,4
+```
