@@ -1179,6 +1179,11 @@ namespace {
 constexpr int kNcBcHarmonic = 0;
 constexpr int kNcBcExternalMedium = 1;
 constexpr int kNcBcExternalHigh = 2;
+constexpr int kNcBcHarmonicZebraK4 = 3;
+constexpr int kNcBcHarmonicZebraK8 = 4;
+constexpr int kNcBcHarmonicZebraK12 = 5;
+constexpr int kNcBcExternalShellK8 = 6;
+constexpr int kNcBcExternalShellK16 = 7;
 constexpr int kNcLabelExact = 0;
 constexpr int kNcLabelWos = 1;
 
@@ -1186,8 +1191,23 @@ __host__ __device__ inline float nc_safe_sqrt(float r2) {
   return sqrtf(fmaxf(r2, 1.0e-12f));
 }
 
+__host__ __device__ inline float nc_complex_power_real(float x, float y, int k) {
+  float ar = 1.0f;
+  float ai = 0.0f;
+  for (int i = 0; i < k; ++i) {
+    const float nr = ar * x - ai * y;
+    const float ni = ar * y + ai * x;
+    ar = nr;
+    ai = ni;
+  }
+  return ar;
+}
+
 __host__ __device__ inline float nc_boundary_device(DeviceVec3 p, int mode) {
   if (mode == kNcBcHarmonic) return p.x * p.x - p.y * p.y;
+  if (mode == kNcBcHarmonicZebraK4) return nc_complex_power_real(p.x, p.y, 4);
+  if (mode == kNcBcHarmonicZebraK8) return nc_complex_power_real(p.x, p.y, 8);
+  if (mode == kNcBcHarmonicZebraK12) return nc_complex_power_real(p.x, p.y, 12);
   float value = 0.0f;
 #define N2WOS_ADD_CHARGE(q, ax, ay, az) \
   do { \
@@ -1196,7 +1216,19 @@ __host__ __device__ inline float nc_boundary_device(DeviceVec3 p, int mode) {
     const float dz__ = p.z - (az); \
     value += (q) / nc_safe_sqrt(dx__ * dx__ + dy__ * dy__ + dz__ * dz__); \
   } while (false)
-  if (mode == kNcBcExternalHigh) {
+  if (mode == kNcBcExternalShellK8 || mode == kNcBcExternalShellK16) {
+    const float r = (mode == kNcBcExternalShellK16) ? 1.08f : 1.14f;
+    const int n = (mode == kNcBcExternalShellK16) ? 16 : 8;
+    for (int i = 0; i < n; ++i) {
+      const float a = 6.283185307179586f * static_cast<float>(i) / static_cast<float>(n);
+      const float q = (i & 1) ? -0.45f : 0.45f;
+      const float z = (i & 2) ? 0.18f : -0.18f;
+      const float rr = sqrtf(fmaxf(r * r - z * z, 0.0f));
+      const float ax = rr * cosf(a);
+      const float ay = rr * sinf(a);
+      N2WOS_ADD_CHARGE(q, ax, ay, z);
+    }
+  } else if (mode == kNcBcExternalHigh) {
     N2WOS_ADD_CHARGE( 1.20f,  1.18f,  0.16f,  0.10f);
     N2WOS_ADD_CHARGE(-1.00f, -1.16f, -0.20f,  0.22f);
     N2WOS_ADD_CHARGE( 0.85f,  0.08f,  1.17f, -0.30f);
@@ -1536,6 +1568,11 @@ int nc_boundary_to_device(NcBoundaryMode mode) {
     case NcBoundaryMode::HarmonicX2MinusY2: return kNcBcHarmonic;
     case NcBoundaryMode::ExternalChargesMedium: return kNcBcExternalMedium;
     case NcBoundaryMode::ExternalChargesHigh: return kNcBcExternalHigh;
+    case NcBoundaryMode::HarmonicZebraK4: return kNcBcHarmonicZebraK4;
+    case NcBoundaryMode::HarmonicZebraK8: return kNcBcHarmonicZebraK8;
+    case NcBoundaryMode::HarmonicZebraK12: return kNcBcHarmonicZebraK12;
+    case NcBoundaryMode::ExternalChargesShellK8: return kNcBcExternalShellK8;
+    case NcBoundaryMode::ExternalChargesShellK16: return kNcBcExternalShellK16;
   }
   throw std::runtime_error("unknown NC boundary mode");
 }
@@ -1576,6 +1613,11 @@ const char* nc_boundary_mode_name(NcBoundaryMode mode) {
     case NcBoundaryMode::HarmonicX2MinusY2: return "harmonic_x2_minus_y2";
     case NcBoundaryMode::ExternalChargesMedium: return "external_charges_medium";
     case NcBoundaryMode::ExternalChargesHigh: return "external_charges_high";
+    case NcBoundaryMode::HarmonicZebraK4: return "harmonic_zebra_k4";
+    case NcBoundaryMode::HarmonicZebraK8: return "harmonic_zebra_k8";
+    case NcBoundaryMode::HarmonicZebraK12: return "harmonic_zebra_k12";
+    case NcBoundaryMode::ExternalChargesShellK8: return "external_charges_shell_k8";
+    case NcBoundaryMode::ExternalChargesShellK16: return "external_charges_shell_k16";
   }
   return "unknown";
 }
@@ -1585,6 +1627,11 @@ NcBoundaryMode parse_nc_boundary_mode(const char* text) {
   if (s == "harmonic" || s == "harmonic_x2_minus_y2") return NcBoundaryMode::HarmonicX2MinusY2;
   if (s == "medium" || s == "external_charges_medium" || s == "charges_medium") return NcBoundaryMode::ExternalChargesMedium;
   if (s == "high" || s == "external_charges_high" || s == "charges_high") return NcBoundaryMode::ExternalChargesHigh;
+  if (s == "zebra4" || s == "harmonic_zebra_k4") return NcBoundaryMode::HarmonicZebraK4;
+  if (s == "zebra8" || s == "harmonic_zebra_k8") return NcBoundaryMode::HarmonicZebraK8;
+  if (s == "zebra12" || s == "harmonic_zebra_k12") return NcBoundaryMode::HarmonicZebraK12;
+  if (s == "shell8" || s == "external_charges_shell_k8" || s == "charges_shell_k8") return NcBoundaryMode::ExternalChargesShellK8;
+  if (s == "shell16" || s == "external_charges_shell_k16" || s == "charges_shell_k16") return NcBoundaryMode::ExternalChargesShellK16;
   throw std::runtime_error("unknown NC boundary mode: " + s);
 }
 

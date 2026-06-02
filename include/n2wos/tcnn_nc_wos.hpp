@@ -15,6 +15,11 @@ enum class NcBoundaryMode {
   HarmonicX2MinusY2 = 0,
   ExternalChargesMedium = 1,
   ExternalChargesHigh = 2,
+  HarmonicZebraK4 = 3,
+  HarmonicZebraK8 = 4,
+  HarmonicZebraK12 = 5,
+  ExternalChargesShellK8 = 6,
+  ExternalChargesShellK16 = 7,
 };
 
 enum class NcLabelSource {

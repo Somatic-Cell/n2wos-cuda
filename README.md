@@ -309,3 +309,21 @@ geometry backend, cache snapshot, and prefix depth.
 The JSON contains `pure_wos`, biased `nc_wos`, and `nc_2lmc_m1`. Training time is
 reported separately and also included in total timings. `cache-preset light` and
 `cache-preset baseline` are intended for the first bias-floor comparison.
+
+### Reference-based slice time-to-MSE
+
+For arbitrary boundary values and complex meshes, use a high-sample Pure WoS numerical reference instead of an analytic exact solution:
+
+```bash
+python3 scripts/run_nc_slice_reference_time_to_mse.py \
+  --executable ./build/cuda-release-cubql-tcnn/n2wos_eval_tcnn_nc_wos \
+  --output-dir results/nc_slice_ref_bumpy_nano_shell16_m4 \
+  --mesh procedural_bumpy_sphere \
+  --boundary external_charges_shell_k16 \
+  --cache-preset nano \
+  --train-points 5000 \
+  --reference-wpp 512 \
+  --depth-m 4
+```
+
+This writes `time_mse_points_reference.csv` and `time_to_threshold_reference.csv` based on a Pure-WoS numerical reference.

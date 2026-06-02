@@ -89,6 +89,8 @@ struct Options {
   std::string network = "FullyFusedMLP";
   int jit = 0;
   std::string output = "results/eval_tcnn_nc_wos.json";
+  std::string save_estimates_prefix;
+  int skip_training = 0;
 };
 
 struct Timer {
@@ -140,6 +142,45 @@ std::string require_value(int& i, int argc, char** argv) {
   return argv[++i];
 }
 
+std::string normalize_mode_text(std::string s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char ch : s) {
+    if (ch == '-' || ch == ' ' || ch == '.') {
+      out.push_back('_');
+    } else if (ch >= 'A' && ch <= 'Z') {
+      out.push_back(static_cast<char>(ch - 'A' + 'a'));
+    } else {
+      out.push_back(ch);
+    }
+  }
+  while (!out.empty() && out.front() == '_') out.erase(out.begin());
+  while (!out.empty() && out.back() == '_') out.pop_back();
+  return out;
+}
+
+n2wos::NcBoundaryMode parse_nc_boundary_mode_cli(const std::string& text) {
+  const std::string s = normalize_mode_text(text);
+  if (s == "zebra4" || s == "zebra_k4" || s == "harmonic_zebra4" || s == "harmonic_zebra_k4") {
+    return n2wos::NcBoundaryMode::HarmonicZebraK4;
+  }
+  if (s == "zebra8" || s == "zebra_k8" || s == "harmonic_zebra8" || s == "harmonic_zebra_k8") {
+    return n2wos::NcBoundaryMode::HarmonicZebraK8;
+  }
+  if (s == "zebra12" || s == "zebra_k12" || s == "harmonic_zebra12" || s == "harmonic_zebra_k12") {
+    return n2wos::NcBoundaryMode::HarmonicZebraK12;
+  }
+  if (s == "shell8" || s == "shell_k8" || s == "charges_shell_k8" ||
+      s == "external_charges_shell8" || s == "external_charges_shell_k8") {
+    return n2wos::NcBoundaryMode::ExternalChargesShellK8;
+  }
+  if (s == "shell16" || s == "shell_k16" || s == "charges_shell_k16" ||
+      s == "external_charges_shell16" || s == "external_charges_shell_k16") {
+    return n2wos::NcBoundaryMode::ExternalChargesShellK16;
+  }
+  return n2wos::parse_nc_boundary_mode(s.c_str());
+}
+
 std::vector<float> parse_float_list4(const std::string& text, const std::string& name) {
   std::stringstream ss(text);
   std::string token;
@@ -170,7 +211,7 @@ void usage(const char* argv0) {
   std::cout << "Usage: " << argv0 << " [options]\n"
             << "  --mesh procedural_bumpy_sphere|obj|ply\n"
             << "  --mesh-path <path>\n"
-            << "  --bc harmonic_x2_minus_y2|external_charges_medium|external_charges_high\n"
+            << "  --bc harmonic_x2_minus_y2|external_charges_medium|external_charges_high|harmonic_zebra_k8|external_charges_shell_k16\n"
             << "  --label-source wos_supervision|exact_analytic\n"
             << "  --cache-preset baseline|light|nano|custom\n"
             << "  --train-points <int> --eval-points <int>\n"
@@ -178,7 +219,9 @@ void usage(const char* argv0) {
             << "  --train-steps-per-refresh <int>\n"
             << "  --pure-walks-per-point <int> --hybrid-walks-per-point <int>\n"
             << "  --coarse-walks-per-point <int> --residual-walks-per-point <int>\n"
-            << "  --depth-m <int> --enable-2lmc 0|1 --output <path>\n";
+            << "  --depth-m <int> --enable-2lmc 0|1 --output <path>\n"
+            << "  --save-estimates-prefix <prefix>  write per-point estimate CSV\n"
+            << "  --skip-training 0|1              skip label generation/training; for pure reference runs only\n";
 }
 
 Options parse(int argc, char** argv) {
@@ -194,7 +237,7 @@ Options parse(int argc, char** argv) {
     else if (a == "--bumpy-amplitude") o.bumpy_amplitude = std::stof(require_value(i,argc,argv));
     else if (a == "--cubql-build-method") o.cubql_build_method = require_value(i,argc,argv);
     else if (a == "--cubql-leaf-size") o.cubql_leaf_size = std::stoi(require_value(i,argc,argv));
-    else if (a == "--bc" || a == "--boundary") { const auto v=require_value(i,argc,argv); o.boundary_mode = n2wos::parse_nc_boundary_mode(v.c_str()); }
+    else if (a == "--bc" || a == "--boundary") { const auto v=require_value(i,argc,argv); o.boundary_mode = parse_nc_boundary_mode_cli(v); }
     else if (a == "--label-source") { const auto v=require_value(i,argc,argv); o.label_source = n2wos::parse_nc_label_source(v.c_str()); }
     else if (a == "--cache-preset") apply_cache_preset(o, require_value(i,argc,argv));
     else if (a == "--train-points") o.train_points = std::stoi(require_value(i,argc,argv));
@@ -233,6 +276,8 @@ Options parse(int argc, char** argv) {
     else if (a == "--learning-rate") o.learning_rate = std::stof(require_value(i,argc,argv));
     else if (a == "--jit") o.jit = std::stoi(require_value(i,argc,argv));
     else if (a == "--output") o.output = require_value(i,argc,argv);
+    else if (a == "--save-estimates-prefix") o.save_estimates_prefix = require_value(i,argc,argv);
+    else if (a == "--skip-training") o.skip_training = std::stoi(require_value(i,argc,argv));
     else throw std::runtime_error("unknown argument: " + a);
   }
   if (o.train_points <= 0 || o.eval_points <= 0 || o.pure_walks_per_point <= 0 || o.hybrid_walks_per_point <= 0) throw std::runtime_error("invalid sample counts");
@@ -342,6 +387,79 @@ TwoLevelStats summarize_two_level(const std::vector<float>& coarse_values,
   const double dn=static_cast<double>(n); out.mse=sum_mse/dn; out.rmse=std::sqrt(out.mse); out.mae=sum_abs/dn; out.mean_estimate=sum_est/dn; out.mean_exact=sum_exact/dn; out.mean_coarse=sum_c/dn; out.mean_residual=sum_r/dn; out.mean_coarse_sample_variance=sum_cvar/dn; out.mean_residual_sample_variance=sum_rvar/dn; out.mean_coarse_steps=sum_csteps/dn; out.mean_residual_steps=sum_rsteps/dn; return out;
 }
 
+
+struct PerPointSummary {
+  double mean = 0.0;
+  double variance = 0.0;
+};
+
+std::vector<PerPointSummary> per_point_summary(const std::vector<float>& values, int points, int wpp) {
+  std::vector<PerPointSummary> out(points);
+  for (int p = 0; p < points; ++p) {
+    double sum = 0.0, sum_sq = 0.0;
+    for (int w = 0; w < wpp; ++w) {
+      const double v = values[p * wpp + w];
+      sum += v;
+      sum_sq += v * v;
+    }
+    const double mean = sum / static_cast<double>(wpp);
+    const double centered = sum_sq - static_cast<double>(wpp) * mean * mean;
+    out[p].mean = mean;
+    out[p].variance = wpp > 1 ? std::max(0.0, centered) / static_cast<double>(wpp - 1) : 0.0;
+  }
+  return out;
+}
+
+void write_estimates_csv(const std::string& prefix,
+                         const std::vector<n2wos::DeviceVec3>& points,
+                         const std::vector<float>& pure_values,
+                         int pure_wpp,
+                         const std::vector<float>& nc_values,
+                         int nc_wpp,
+                         const std::vector<float>* coarse_values,
+                         int coarse_wpp,
+                         const std::vector<float>* residual_values,
+                         int residual_wpp,
+                         n2wos::NcBoundaryMode bc) {
+  if (prefix.empty()) return;
+  const std::filesystem::path out_path(prefix + "_estimates.csv");
+  if (!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path());
+  std::ofstream out(out_path);
+  if (!out) throw std::runtime_error("failed to open estimates CSV for writing: " + out_path.string());
+
+  const int n = static_cast<int>(points.size());
+  const auto pure = per_point_summary(pure_values, n, pure_wpp);
+  const auto nc = per_point_summary(nc_values, n, nc_wpp);
+  std::vector<PerPointSummary> coarse, residual;
+  const bool has_2lmc = coarse_values && residual_values && !coarse_values->empty() && !residual_values->empty();
+  if (has_2lmc) {
+    coarse = per_point_summary(*coarse_values, n, coarse_wpp);
+    residual = per_point_summary(*residual_values, n, residual_wpp);
+  }
+
+  out << "point_id,x,y,z,analytic_value,pure_mean,pure_sample_variance,nc_wos_mean,nc_wos_sample_variance";
+  if (has_2lmc) {
+    out << ",nc_2lmc_mean,nc_2lmc_coarse_mean,nc_2lmc_residual_mean,nc_2lmc_coarse_sample_variance,nc_2lmc_residual_sample_variance";
+  }
+  out << "\n" << std::setprecision(10);
+
+  for (int i = 0; i < n; ++i) {
+    const auto& p = points[i];
+    const n2wos::Vec3f hp{p.x, p.y, p.z};
+    out << i << ',' << p.x << ',' << p.y << ',' << p.z << ',' << n2wos::nc_boundary_value_host(hp, bc)
+        << ',' << pure[i].mean << ',' << pure[i].variance
+        << ',' << nc[i].mean << ',' << nc[i].variance;
+    if (has_2lmc) {
+      out << ',' << (coarse[i].mean + residual[i].mean)
+          << ',' << coarse[i].mean
+          << ',' << residual[i].mean
+          << ',' << coarse[i].variance
+          << ',' << residual[i].variance;
+    }
+    out << '\n';
+  }
+}
+
 std::string stats_json(const Stats& s, int points, int wpp, float elapsed_ms, float training_ms=0.0f) {
   std::ostringstream o; o << std::setprecision(9) << "{\n"
     << "      \"eval_points\": " << points << ",\n"
@@ -446,7 +564,10 @@ int main(int argc, char** argv) {
     N2WOS_CUDA_CHECK(cudaMemsetAsync(residual_inputs.data(),0,sizeof(float)*3*residual_padded,stream)); N2WOS_CUDA_CHECK(cudaMemsetAsync(residual_cache_outputs.data(),0,sizeof(float)*residual_padded,stream));
     int* d_counts=nullptr; N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_counts,sizeof(int)*train_count)); N2WOS_CUDA_CHECK(cudaMemsetAsync(d_counts,0,sizeof(int)*train_count,stream));
     n2wos::NcDeviceDatasetOptions ds; ds.d_world_points=d_train; ds.point_count=train_count; ds.walks_per_point=opt.walks_per_label_refresh; ds.max_steps=opt.max_steps; ds.epsilon=opt.epsilon; ds.step_scale=opt.step_scale; ds.seed=opt.seed; ds.boundary_mode=opt.boundary_mode; ds.label_source=opt.label_source; ds.input_min=in_min; ds.input_extent=in_extent; ds.block_size=opt.block_size;
-    float label_ms=0, train_ms=0; for(int r=0;r<opt.label_refreshes;++r){ ds.refresh_index=r; timer.begin(stream); n2wos::launch_nc_update_labels(bvh,ds,train_inputs.data(),train_targets.data(),d_counts,stream); label_ms += timer.end(stream); timer.begin(stream); for(int s=0;s<opt.train_steps_per_refresh;++s){ auto ctx=trainer->training_step(stream,train_inputs,train_targets); (void)ctx; } train_ms += timer.end(stream); }
+    float label_ms=0, train_ms=0;
+    if (!opt.skip_training) {
+      for(int r=0;r<opt.label_refreshes;++r){ ds.refresh_index=r; timer.begin(stream); n2wos::launch_nc_update_labels(bvh,ds,train_inputs.data(),train_targets.data(),d_counts,stream); label_ms += timer.end(stream); timer.begin(stream); for(int s=0;s<opt.train_steps_per_refresh;++s){ auto ctx=trainer->training_step(stream,train_inputs,train_targets); (void)ctx; } train_ms += timer.end(stream); }
+    }
 
     const int pure_samples=eval_count*opt.pure_walks_per_point; float *d_pure=nullptr,*d_boundary=nullptr,*d_nc_values=nullptr,*d_dummy_residual=nullptr; int *d_pure_steps=nullptr,*d_pure_forced=nullptr,*d_pure_over=nullptr,*d_h_steps=nullptr,*d_h_forced=nullptr,*d_h_over=nullptr; unsigned char* d_need=nullptr;
     N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure,sizeof(float)*pure_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure_steps,sizeof(int)*pure_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure_forced,sizeof(int)*pure_samples)); N2WOS_CUDA_CHECK(cudaMalloc((void**)&d_pure_over,sizeof(int)*pure_samples));
@@ -483,6 +604,9 @@ int main(int argc, char** argv) {
     N2WOS_CUDA_CHECK(cudaStreamSynchronize(stream));
     const Stats pure=summarize(h_pure,h_ps,h_pf,h_po,nullptr,eval_points,opt.pure_walks_per_point,opt.boundary_mode); const Stats hybrid=summarize(h_hybrid,h_hs,h_hf,h_ho,&h_need,eval_points,opt.hybrid_walks_per_point,opt.boundary_mode);
     TwoLevelStats tl; if (opt.enable_2lmc) tl=summarize_two_level(h_c_values,h_r_values,h_cs,h_rs,h_cf,h_rf,h_co,h_ro,h_c_need,h_r_need,eval_points,opt.coarse_walks_per_point,opt.residual_walks_per_point,opt.boundary_mode);
+    if (!opt.save_estimates_prefix.empty()) {
+      write_estimates_csv(opt.save_estimates_prefix, eval_points, h_pure, opt.pure_walks_per_point, h_hybrid, opt.hybrid_walks_per_point, opt.enable_2lmc ? &h_c_values : nullptr, opt.coarse_walks_per_point, opt.enable_2lmc ? &h_r_values : nullptr, opt.residual_walks_per_point, opt.boundary_mode);
+    }
 
     std::filesystem::path out_path(opt.output); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(opt.output); if(!out) throw std::runtime_error("failed to open output: "+opt.output); out << std::setprecision(9);
     out << "{\n  \"schema\": \"n2wos_tcnn_nc_wos_eval_v4\",\n  \"patch\": \"0009-add-slice-eval-sampler\",\n  \"generated_at_utc\": " << n2wos::json_quote(now_utc()) << ",\n  \"command_line\": " << n2wos::json_quote(cmd) << ",\n  \"cuda\": " << cuda_json() << ",\n  \"implementation_mode\": {\n    \"solver\": \"neural_cache_wos_and_nc_2lmc_depth_sweep_screening\",\n    \"geometry_backend\": \"cubql_cuda\",\n    \"cache_backend\": \"tiny-cuda-nn_native_cpp\",\n    \"training_schedule\": \"fixed_refresh_count_and_fixed_train_steps\",\n    \"training_labels\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"host_transfer_between_prefix_and_tcnn\": false,\n    \"host_transfer_between_tcnn_and_residual_consumer\": false,\n    \"csv_postprocess\": false,\n    \"python_bindings\": false,\n    \"nc_wos_biased\": true,\n    \"nc_2lmc_correction_enabled\": " << (opt.enable_2lmc?"true":"false") << ",\n    \"nc_and_2lmc_share_depth_m\": true,\n    \"point_sampler\": " << n2wos::json_quote(opt.eval_mode == "slice" ? "fixed_slice_interior_pixels" : "inscribed_ball_screening_sampler") << ",\n    \"production_status\": \"screening_diagnostic_not_final_wall_clock\"\n  },\n";
@@ -501,6 +625,11 @@ int main(int argc, char** argv) {
           << "    \"frame_v_max\": " << slice_eval.v_max << ",\n"
           << "    \"mask_ppm\": " << n2wos::json_quote(slice_prefix + "_mask.ppm") << ",\n"
           << "    \"points_csv\": " << n2wos::json_quote(slice_prefix + "_points.csv") << "\n"
+          << "  },\n";
+    }
+    if (!opt.save_estimates_prefix.empty()) {
+      out << "  \"estimate_outputs\": {\n"
+          << "    \"estimates_csv\": " << n2wos::json_quote(opt.save_estimates_prefix + "_estimates.csv") << "\n"
           << "  },\n";
     }
     out << "  \"mesh_stats\": {\n    \"name\": " << n2wos::json_quote(mesh.name) << ",\n    \"vertices\": " << mesh.vertices.size() << ",\n    \"triangles\": " << mesh.triangles.size() << ",\n    \"degenerate_triangles\": " << deg << ",\n    \"bounds_min\": [" << bounds.min.x << ", " << bounds.min.y << ", " << bounds.min.z << "],\n    \"bounds_max\": [" << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z << "],\n    \"normalization\": {\"center\": [" << norm.center.x << ", " << norm.center.y << ", " << norm.center.z << "], \"scale\": " << norm.scale << "}\n  },\n";
