@@ -26,6 +26,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--estimates-csv", default="", help="existing *_estimates.csv to render when --run 0")
     p.add_argument("--mask-ppm", default="", help="existing *_mask.ppm to render when --run 0")
     p.add_argument("--reference-estimates-csv", default="", help="optional high-sample Pure-WoS reference estimates CSV")
+    p.add_argument("--direct-cache-only", type=int, default=0,
+                   help="force deterministic direct C_theta(x): depth_m=0, hybrid_wpp=1, no 2LMC")
 
     # Forwarded solver options.
     p.add_argument("--mesh", default="procedural_bumpy_sphere")
@@ -42,6 +44,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--walks-per-label-refresh", type=int, default=16)
     p.add_argument("--train-steps-per-refresh", type=int, default=1000)
     p.add_argument("--learning-rate", type=float, default=None)
+    p.add_argument("--n-levels", type=int, default=None)
+    p.add_argument("--n-features-per-level", type=int, default=None)
+    p.add_argument("--log2-hashmap-size", type=int, default=None)
+    p.add_argument("--base-resolution", type=int, default=None)
+    p.add_argument("--per-level-scale", type=float, default=None)
+    p.add_argument("--n-neurons", type=int, default=None)
+    p.add_argument("--n-hidden-layers", type=int, default=None)
     p.add_argument("--depth-m", type=int, default=0, help="use 0 for direct cache field C_theta(x)")
     p.add_argument("--slice-width", type=int, default=512)
     p.add_argument("--slice-height", type=int, default=512)
@@ -209,6 +218,60 @@ def render_field_ppm(path: Path, width: int, height: int, mask_original: Sequenc
                 f.write(bytes(rgb))
 
 
+
+def summarize_pair(pred: Sequence[float], ref: Sequence[float]) -> Dict[str, float]:
+    if len(pred) != len(ref):
+        raise ValueError(f"point count mismatch: {len(pred)} vs {len(ref)}")
+    n = len(pred)
+    if n == 0:
+        return {"count": 0.0, "rmse": 0.0, "mae": 0.0, "mean_error": 0.0, "corr": 0.0,
+                "pred_mean": 0.0, "ref_mean": 0.0, "pred_variance": 0.0, "ref_variance": 0.0,
+                "error_variance": 0.0, "residual_variance_ratio": 0.0}
+    mean_p = sum(pred) / n
+    mean_r = sum(ref) / n
+    mse = 0.0
+    mae = 0.0
+    mean_err = 0.0
+    vp = 0.0
+    vr = 0.0
+    ve = 0.0
+    cov = 0.0
+    for p, r in zip(pred, ref):
+        e = p - r
+        mse += e * e
+        mae += abs(e)
+        mean_err += e
+        dp = p - mean_p
+        dr = r - mean_r
+        de = e - (mean_p - mean_r)
+        vp += dp * dp
+        vr += dr * dr
+        ve += de * de
+        cov += dp * dr
+    denom = max(1, n - 1)
+    var_p = vp / denom
+    var_r = vr / denom
+    var_e = ve / denom
+    corr = cov / math.sqrt(max(vp * vr, 1e-30))
+    return {
+        "count": float(n),
+        "rmse": math.sqrt(mse / n),
+        "mae": mae / n,
+        "mean_error": mean_err / n,
+        "corr": corr,
+        "pred_mean": mean_p,
+        "ref_mean": mean_r,
+        "pred_variance": var_p,
+        "ref_variance": var_r,
+        "error_variance": var_e,
+        "residual_variance_ratio": var_e / var_r if var_r > 0.0 else 0.0,
+    }
+
+
+def write_metrics_json(path: Path, metrics: Dict[str, Dict[str, float]]) -> None:
+    path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def write_range_json(path: Path, entries: Dict[str, Dict[str, float]]) -> None:
     path.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -217,6 +280,10 @@ def main() -> None:
     args = parse_args()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.direct_cache_only:
+        args.depth_m = 0
+        args.hybrid_walks_per_point = 1
+        args.pure_walks_per_point = 1
 
     prefix = out_dir / "cache_slice"
     output_json = out_dir / "cache_slice_eval.json"
@@ -271,6 +338,17 @@ def main() -> None:
                 ])
             if args.learning_rate is not None:
                 cmd.extend(["--learning-rate", str(args.learning_rate)])
+            for opt_name, value in [
+                ("--n-levels", args.n_levels),
+                ("--n-features-per-level", args.n_features_per_level),
+                ("--log2-hashmap-size", args.log2_hashmap_size),
+                ("--base-resolution", args.base_resolution),
+                ("--per-level-scale", args.per_level_scale),
+                ("--n-neurons", args.n_neurons),
+                ("--n-hidden-layers", args.n_hidden_layers),
+            ]:
+                if value is not None:
+                    cmd.extend([opt_name, str(value)])
             run_command(cmd)
 
     if not estimates_csv.exists():
@@ -297,6 +375,14 @@ def main() -> None:
         fields["cache_minus_reference"] = [c - r for c, r in zip(cache, ref)]
         fields["abs_cache_minus_reference"] = [abs(c - r) for c, r in zip(cache, ref)]
 
+    metrics: Dict[str, Dict[str, float]] = {
+        "cache_vs_analytic_value": summarize_pair(cache, analytic),
+    }
+    if "reference_pure_mean" in fields:
+        metrics["cache_vs_reference"] = summarize_pair(cache, fields["reference_pure_mean"])
+        metrics["analytic_value_vs_reference"] = summarize_pair(analytic, fields["reference_pure_mean"])
+    write_metrics_json(out_dir / "metrics.json", metrics)
+
     ranges: Dict[str, Dict[str, float]] = {}
     for name, vals in fields.items():
         mode = args.value_range
@@ -321,8 +407,10 @@ def main() -> None:
         "reference_estimates_csv": args.reference_estimates_csv,
         "run_eval": bool(args.run),
         "depth_m": args.depth_m,
-        "note": "Use --depth-m 0 and --hybrid-walks-per-point 1 to visualize direct C_theta(x). For m>0, nc_wos_mean visualizes E[C_theta(X_m)] under m-step prefixes.",
+        "direct_cache_only": bool(args.direct_cache_only),
+        "note": "Use --direct-cache-only 1 or --depth-m 0 and --hybrid-walks-per-point 1 to visualize deterministic C_theta(x). For m>0, nc_wos_mean visualizes E[C_theta(X_m)] under m-step prefixes.",
         "ranges": ranges,
+        "metrics_json": str(out_dir / "metrics.json"),
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_range_json(out_dir / "ranges.json", ranges)

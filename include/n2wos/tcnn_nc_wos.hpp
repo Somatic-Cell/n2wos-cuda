@@ -24,6 +24,7 @@ enum class NcBoundaryMode {
   BoundaryTextureStripesK16 = 9,
   BoundaryTextureCheckerK8 = 10,
   BoundaryTextureCheckerK16 = 11,
+  ConstantOne = 12,
 };
 
 enum class NcLabelSource {

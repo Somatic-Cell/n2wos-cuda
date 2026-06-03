@@ -91,6 +91,7 @@ struct Options {
   std::string output = "results/eval_tcnn_nc_wos.json";
   std::string save_estimates_prefix;
   int skip_training = 0;
+  int eval_use_train_points = 0;
 };
 
 struct Timer {
@@ -161,6 +162,9 @@ std::string normalize_mode_text(std::string s) {
 
 n2wos::NcBoundaryMode parse_nc_boundary_mode_cli(const std::string& text) {
   const std::string s = normalize_mode_text(text);
+  if (s == "constant" || s == "constant_one" || s == "one" || s == "const1") {
+    return n2wos::NcBoundaryMode::ConstantOne;
+  }
   if (s == "zebra4" || s == "zebra_k4" || s == "harmonic_zebra4" || s == "harmonic_zebra_k4") {
     return n2wos::NcBoundaryMode::HarmonicZebraK4;
   }
@@ -216,10 +220,14 @@ void apply_cache_preset(Options& o, const std::string& preset) {
     o.n_levels = 8; o.n_features_per_level = 2; o.log2_hashmap_size = 15; o.base_resolution = 8; o.per_level_scale = 1.5f; o.n_neurons = 16; o.n_hidden_layers = 1;
   } else if (preset == "nano") {
     o.n_levels = 6; o.n_features_per_level = 2; o.log2_hashmap_size = 13; o.base_resolution = 8; o.per_level_scale = 1.5f; o.n_neurons = 16; o.n_hidden_layers = 1;
+  } else if (preset == "heavy") {
+    o.n_levels = 16; o.n_features_per_level = 2; o.log2_hashmap_size = 19; o.base_resolution = 8; o.per_level_scale = 1.4f; o.n_neurons = 64; o.n_hidden_layers = 3;
+  } else if (preset == "xlarge") {
+    o.n_levels = 16; o.n_features_per_level = 4; o.log2_hashmap_size = 20; o.base_resolution = 8; o.per_level_scale = 1.35f; o.n_neurons = 64; o.n_hidden_layers = 4;
   } else if (preset == "custom") {
     // Keep explicitly supplied architecture parameters.
   } else {
-    throw std::runtime_error("unknown cache preset: " + preset + " (expected baseline, light, nano, custom)");
+    throw std::runtime_error("unknown cache preset: " + preset + " (expected baseline, light, nano, heavy, xlarge, custom)");
   }
 }
 
@@ -227,9 +235,9 @@ void usage(const char* argv0) {
   std::cout << "Usage: " << argv0 << " [options]\n"
             << "  --mesh procedural_bumpy_sphere|obj|ply\n"
             << "  --mesh-path <path>\n"
-            << "  --bc harmonic_x2_minus_y2|external_charges_medium|external_charges_high|harmonic_zebra_k8|external_charges_shell_k16|boundary_texture_stripes_k16|boundary_texture_checker_k16\n"
+            << "  --bc constant_one|harmonic_x2_minus_y2|external_charges_medium|external_charges_high|harmonic_zebra_k8|external_charges_shell_k16|boundary_texture_stripes_k16|boundary_texture_checker_k16\n"
             << "  --label-source wos_supervision|exact_analytic\n"
-            << "  --cache-preset baseline|light|nano|custom\n"
+            << "  --cache-preset baseline|light|nano|heavy|xlarge|custom\n"
             << "  --train-points <int> --eval-points <int>\n"
             << "  --label-refreshes <int> --walks-per-label-refresh <int>\n"
             << "  --train-steps-per-refresh <int>\n"
@@ -237,7 +245,8 @@ void usage(const char* argv0) {
             << "  --coarse-walks-per-point <int> --residual-walks-per-point <int>\n"
             << "  --depth-m <int> --enable-2lmc 0|1 --output <path>\n"
             << "  --save-estimates-prefix <prefix>  write per-point estimate CSV\n"
-            << "  --skip-training 0|1              skip label generation/training; for pure reference runs only\n";
+            << "  --skip-training 0|1              skip label generation/training; for pure reference runs only\n"
+            << "  --eval-use-train-points 0|1     evaluate exactly on the training points for overfit diagnostics\n";
 }
 
 Options parse(int argc, char** argv) {
@@ -294,6 +303,7 @@ Options parse(int argc, char** argv) {
     else if (a == "--output") o.output = require_value(i,argc,argv);
     else if (a == "--save-estimates-prefix") o.save_estimates_prefix = require_value(i,argc,argv);
     else if (a == "--skip-training") o.skip_training = std::stoi(require_value(i,argc,argv));
+    else if (a == "--eval-use-train-points") { o.eval_use_train_points = std::stoi(require_value(i,argc,argv)); if (o.eval_use_train_points) o.eval_mode = "train_points"; }
     else throw std::runtime_error("unknown argument: " + a);
   }
   if (o.train_points <= 0 || o.eval_points <= 0 || o.pure_walks_per_point <= 0 || o.hybrid_walks_per_point <= 0) throw std::runtime_error("invalid sample counts");
@@ -552,10 +562,13 @@ int main(int argc, char** argv) {
     n2wos::Mesh mesh=load_mesh(opt); n2wos::NormalizeTransform norm{}; if(opt.normalize) norm=n2wos::normalize_to_unit_radius(mesh); const n2wos::Aabb bounds=n2wos::compute_bounds(mesh); const int deg=count_degenerate(mesh);
     n2wos::CuBqlBvh bvh(mesh,opt.cubql_leaf_size,opt.cubql_build_method);
     const int train_count=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(opt.train_points), tcnn::BATCH_SIZE_GRANULARITY));
+    const std::vector<n2wos::DeviceVec3> train_points=make_ball_points(train_count,bounds,static_cast<std::uint64_t>(opt.seed));
     SliceEvalSet slice_eval;
     std::vector<n2wos::DeviceVec3> eval_points;
     std::string slice_prefix;
-    if (opt.eval_mode == "slice") {
+    if (opt.eval_mode == "train_points") {
+      eval_points = train_points;
+    } else if (opt.eval_mode == "slice") {
       slice_eval = make_slice_eval_points(opt, mesh, bounds);
       eval_points = slice_eval.points;
       slice_prefix = default_slice_prefix(opt);
@@ -568,7 +581,6 @@ int main(int argc, char** argv) {
     const int hybrid_samples=eval_count*opt.hybrid_walks_per_point; const int hybrid_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(hybrid_samples), tcnn::BATCH_SIZE_GRANULARITY));
     const int coarse_samples=eval_count*opt.coarse_walks_per_point; const int coarse_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(coarse_samples), tcnn::BATCH_SIZE_GRANULARITY));
     const int residual_samples=eval_count*opt.residual_walks_per_point; const int residual_padded=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(residual_samples), tcnn::BATCH_SIZE_GRANULARITY));
-    const std::vector<n2wos::DeviceVec3> train_points=make_ball_points(train_count,bounds,static_cast<std::uint64_t>(opt.seed));
     const n2wos::Vec3f in_min=input_min(bounds), in_extent=input_extent(bounds);
 
     cudaStream_t stream{}; N2WOS_CUDA_CHECK(cudaStreamCreate(&stream)); Timer timer;
@@ -630,8 +642,8 @@ int main(int argc, char** argv) {
     }
 
     std::filesystem::path out_path(opt.output); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(opt.output); if(!out) throw std::runtime_error("failed to open output: "+opt.output); out << std::setprecision(9);
-    out << "{\n  \"schema\": \"n2wos_tcnn_nc_wos_eval_v4\",\n  \"patch\": \"0009-add-slice-eval-sampler\",\n  \"generated_at_utc\": " << n2wos::json_quote(now_utc()) << ",\n  \"command_line\": " << n2wos::json_quote(cmd) << ",\n  \"cuda\": " << cuda_json() << ",\n  \"implementation_mode\": {\n    \"solver\": \"neural_cache_wos_and_nc_2lmc_depth_sweep_screening\",\n    \"geometry_backend\": \"cubql_cuda\",\n    \"cache_backend\": \"tiny-cuda-nn_native_cpp\",\n    \"training_schedule\": \"fixed_refresh_count_and_fixed_train_steps\",\n    \"training_labels\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"host_transfer_between_prefix_and_tcnn\": false,\n    \"host_transfer_between_tcnn_and_residual_consumer\": false,\n    \"csv_postprocess\": false,\n    \"python_bindings\": false,\n    \"nc_wos_biased\": true,\n    \"nc_2lmc_correction_enabled\": " << (opt.enable_2lmc?"true":"false") << ",\n    \"nc_and_2lmc_share_depth_m\": true,\n    \"point_sampler\": " << n2wos::json_quote(opt.eval_mode == "slice" ? "fixed_slice_interior_pixels" : "inscribed_ball_screening_sampler") << ",\n    \"production_status\": \"screening_diagnostic_not_final_wall_clock\"\n  },\n";
-    out << "  \"options\": {\n    \"mesh\": " << n2wos::json_quote(opt.mesh) << ",\n    \"mesh_path\": " << n2wos::json_quote(opt.mesh_path) << ",\n    \"boundary_condition\": " << n2wos::json_quote(n2wos::nc_boundary_mode_name(opt.boundary_mode)) << ",\n    \"label_source\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"train_points_requested\": " << opt.train_points << ",\n    \"train_points_padded\": " << train_count << ",\n    \"eval_points_requested\": " << opt.eval_points << ",\n    \"eval_points\": " << eval_count << ",\n    \"eval_mode\": " << n2wos::json_quote(opt.eval_mode) << ",\n    \"label_refreshes\": " << opt.label_refreshes << ",\n    \"walks_per_label_refresh\": " << opt.walks_per_label_refresh << ",\n    \"train_steps_per_refresh\": " << opt.train_steps_per_refresh << ",\n    \"pure_walks_per_point\": " << opt.pure_walks_per_point << ",\n    \"hybrid_walks_per_point\": " << opt.hybrid_walks_per_point << ",\n    \"coarse_walks_per_point\": " << opt.coarse_walks_per_point << ",\n    \"residual_walks_per_point\": " << opt.residual_walks_per_point << ",\n    \"depth_m\": " << opt.depth_m << ",\n    \"max_steps\": " << opt.max_steps << ",\n    \"epsilon\": " << opt.epsilon << ",\n    \"cache_preset\": " << n2wos::json_quote(opt.cache_preset) << ",\n    \"network\": " << n2wos::json_quote(opt.network) << ",\n    \"n_levels\": " << opt.n_levels << ",\n    \"n_features_per_level\": " << opt.n_features_per_level << ",\n    \"log2_hashmap_size\": " << opt.log2_hashmap_size << ",\n    \"base_resolution\": " << opt.base_resolution << ",\n    \"per_level_scale\": " << opt.per_level_scale << ",\n    \"n_neurons\": " << opt.n_neurons << ",\n    \"n_hidden_layers\": " << opt.n_hidden_layers << ",\n    \"jit_requested\": " << (opt.jit?"true":"false") << ",\n    \"jit_supported\": " << (jit_supported?"true":"false") << ",\n    \"jit_enabled\": " << (network->jit_fusion()?"true":"false") << "\n  },\n";
+    out << "{\n  \"schema\": \"n2wos_tcnn_nc_wos_eval_v4\",\n  \"patch\": \"0009-add-slice-eval-sampler\",\n  \"generated_at_utc\": " << n2wos::json_quote(now_utc()) << ",\n  \"command_line\": " << n2wos::json_quote(cmd) << ",\n  \"cuda\": " << cuda_json() << ",\n  \"implementation_mode\": {\n    \"solver\": \"neural_cache_wos_and_nc_2lmc_depth_sweep_screening\",\n    \"geometry_backend\": \"cubql_cuda\",\n    \"cache_backend\": \"tiny-cuda-nn_native_cpp\",\n    \"training_schedule\": \"fixed_refresh_count_and_fixed_train_steps\",\n    \"training_labels\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"host_transfer_between_prefix_and_tcnn\": false,\n    \"host_transfer_between_tcnn_and_residual_consumer\": false,\n    \"csv_postprocess\": false,\n    \"python_bindings\": false,\n    \"nc_wos_biased\": true,\n    \"nc_2lmc_correction_enabled\": " << (opt.enable_2lmc?"true":"false") << ",\n    \"nc_and_2lmc_share_depth_m\": true,\n    \"point_sampler\": " << n2wos::json_quote(opt.eval_mode == "slice" ? "fixed_slice_interior_pixels" : (opt.eval_mode == "train_points" ? "training_points_reused_for_eval_sanity" : "inscribed_ball_screening_sampler")) << ",\n    \"production_status\": \"screening_diagnostic_not_final_wall_clock\"\n  },\n";
+    out << "  \"options\": {\n    \"mesh\": " << n2wos::json_quote(opt.mesh) << ",\n    \"mesh_path\": " << n2wos::json_quote(opt.mesh_path) << ",\n    \"boundary_condition\": " << n2wos::json_quote(n2wos::nc_boundary_mode_name(opt.boundary_mode)) << ",\n    \"label_source\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"train_points_requested\": " << opt.train_points << ",\n    \"train_points_padded\": " << train_count << ",\n    \"eval_points_requested\": " << opt.eval_points << ",\n    \"eval_points\": " << eval_count << ",\n    \"eval_mode\": " << n2wos::json_quote(opt.eval_mode) << ",\n    \"eval_use_train_points\": " << (opt.eval_mode == "train_points" || opt.eval_use_train_points ? "true" : "false") << ",\n    \"label_refreshes\": " << opt.label_refreshes << ",\n    \"walks_per_label_refresh\": " << opt.walks_per_label_refresh << ",\n    \"train_steps_per_refresh\": " << opt.train_steps_per_refresh << ",\n    \"pure_walks_per_point\": " << opt.pure_walks_per_point << ",\n    \"hybrid_walks_per_point\": " << opt.hybrid_walks_per_point << ",\n    \"coarse_walks_per_point\": " << opt.coarse_walks_per_point << ",\n    \"residual_walks_per_point\": " << opt.residual_walks_per_point << ",\n    \"depth_m\": " << opt.depth_m << ",\n    \"max_steps\": " << opt.max_steps << ",\n    \"epsilon\": " << opt.epsilon << ",\n    \"cache_preset\": " << n2wos::json_quote(opt.cache_preset) << ",\n    \"network\": " << n2wos::json_quote(opt.network) << ",\n    \"n_levels\": " << opt.n_levels << ",\n    \"n_features_per_level\": " << opt.n_features_per_level << ",\n    \"log2_hashmap_size\": " << opt.log2_hashmap_size << ",\n    \"base_resolution\": " << opt.base_resolution << ",\n    \"per_level_scale\": " << opt.per_level_scale << ",\n    \"n_neurons\": " << opt.n_neurons << ",\n    \"n_hidden_layers\": " << opt.n_hidden_layers << ",\n    \"jit_requested\": " << (opt.jit?"true":"false") << ",\n    \"jit_supported\": " << (jit_supported?"true":"false") << ",\n    \"jit_enabled\": " << (network->jit_fusion()?"true":"false") << "\n  },\n";
     if (opt.eval_mode == "slice") {
       out << "  \"slice_eval\": {\n"
           << "    \"width\": " << slice_eval.width << ",\n"

@@ -1188,6 +1188,7 @@ constexpr int kNcBcTextureStripesK8 = 8;
 constexpr int kNcBcTextureStripesK16 = 9;
 constexpr int kNcBcTextureCheckerK8 = 10;
 constexpr int kNcBcTextureCheckerK16 = 11;
+constexpr int kNcBcConstantOne = 12;
 constexpr int kNcLabelExact = 0;
 constexpr int kNcLabelWos = 1;
 
@@ -1226,6 +1227,7 @@ __host__ __device__ inline float nc_boundary_texture_checker(DeviceVec3 p, int k
 }
 
 __host__ __device__ inline float nc_boundary_device(DeviceVec3 p, int mode) {
+  if (mode == kNcBcConstantOne) return 1.0f;
   if (mode == kNcBcHarmonic) return p.x * p.x - p.y * p.y;
   if (mode == kNcBcHarmonicZebraK4) return nc_complex_power_real(p.x, p.y, 4);
   if (mode == kNcBcHarmonicZebraK8) return nc_complex_power_real(p.x, p.y, 8);
@@ -1603,6 +1605,7 @@ int nc_boundary_to_device(NcBoundaryMode mode) {
     case NcBoundaryMode::BoundaryTextureStripesK16: return kNcBcTextureStripesK16;
     case NcBoundaryMode::BoundaryTextureCheckerK8: return kNcBcTextureCheckerK8;
     case NcBoundaryMode::BoundaryTextureCheckerK16: return kNcBcTextureCheckerK16;
+    case NcBoundaryMode::ConstantOne: return kNcBcConstantOne;
   }
   throw std::runtime_error("unknown NC boundary mode");
 }
@@ -1652,12 +1655,14 @@ const char* nc_boundary_mode_name(NcBoundaryMode mode) {
     case NcBoundaryMode::BoundaryTextureStripesK16: return "boundary_texture_stripes_k16";
     case NcBoundaryMode::BoundaryTextureCheckerK8: return "boundary_texture_checker_k8";
     case NcBoundaryMode::BoundaryTextureCheckerK16: return "boundary_texture_checker_k16";
+    case NcBoundaryMode::ConstantOne: return "constant_one";
   }
   return "unknown";
 }
 
 NcBoundaryMode parse_nc_boundary_mode(const char* text) {
   const std::string s(text ? text : "");
+  if (s == "constant" || s == "constant_one" || s == "one" || s == "const1") return NcBoundaryMode::ConstantOne;
   if (s == "harmonic" || s == "harmonic_x2_minus_y2") return NcBoundaryMode::HarmonicX2MinusY2;
   if (s == "medium" || s == "external_charges_medium" || s == "charges_medium") return NcBoundaryMode::ExternalChargesMedium;
   if (s == "high" || s == "external_charges_high" || s == "charges_high") return NcBoundaryMode::ExternalChargesHigh;
