@@ -178,6 +178,22 @@ n2wos::NcBoundaryMode parse_nc_boundary_mode_cli(const std::string& text) {
       s == "external_charges_shell16" || s == "external_charges_shell_k16") {
     return n2wos::NcBoundaryMode::ExternalChargesShellK16;
   }
+  if (s == "stripes8" || s == "stripes_k8" || s == "texture_stripes_k8" ||
+      s == "boundary_texture_stripes8" || s == "boundary_texture_stripes_k8") {
+    return n2wos::NcBoundaryMode::BoundaryTextureStripesK8;
+  }
+  if (s == "stripes16" || s == "stripes_k16" || s == "texture_stripes_k16" ||
+      s == "boundary_texture_stripes16" || s == "boundary_texture_stripes_k16") {
+    return n2wos::NcBoundaryMode::BoundaryTextureStripesK16;
+  }
+  if (s == "checker8" || s == "checker_k8" || s == "texture_checker_k8" ||
+      s == "boundary_texture_checker8" || s == "boundary_texture_checker_k8") {
+    return n2wos::NcBoundaryMode::BoundaryTextureCheckerK8;
+  }
+  if (s == "checker16" || s == "checker_k16" || s == "texture_checker_k16" ||
+      s == "boundary_texture_checker16" || s == "boundary_texture_checker_k16") {
+    return n2wos::NcBoundaryMode::BoundaryTextureCheckerK16;
+  }
   return n2wos::parse_nc_boundary_mode(s.c_str());
 }
 
@@ -211,7 +227,7 @@ void usage(const char* argv0) {
   std::cout << "Usage: " << argv0 << " [options]\n"
             << "  --mesh procedural_bumpy_sphere|obj|ply\n"
             << "  --mesh-path <path>\n"
-            << "  --bc harmonic_x2_minus_y2|external_charges_medium|external_charges_high|harmonic_zebra_k8|external_charges_shell_k16\n"
+            << "  --bc harmonic_x2_minus_y2|external_charges_medium|external_charges_high|harmonic_zebra_k8|external_charges_shell_k16|boundary_texture_stripes_k16|boundary_texture_checker_k16\n"
             << "  --label-source wos_supervision|exact_analytic\n"
             << "  --cache-preset baseline|light|nano|custom\n"
             << "  --train-points <int> --eval-points <int>\n"
@@ -396,16 +412,21 @@ struct PerPointSummary {
 std::vector<PerPointSummary> per_point_summary(const std::vector<float>& values, int points, int wpp) {
   std::vector<PerPointSummary> out(points);
   for (int p = 0; p < points; ++p) {
-    double sum = 0.0, sum_sq = 0.0;
+    // Welford update avoids cancellation in sum_sq - n*mean^2 when writing
+    // high-wpp reference chunks.
+    double mean = 0.0;
+    double m2 = 0.0;
+    int count = 0;
     for (int w = 0; w < wpp; ++w) {
       const double v = values[p * wpp + w];
-      sum += v;
-      sum_sq += v * v;
+      ++count;
+      const double delta = v - mean;
+      mean += delta / static_cast<double>(count);
+      const double delta2 = v - mean;
+      m2 += delta * delta2;
     }
-    const double mean = sum / static_cast<double>(wpp);
-    const double centered = sum_sq - static_cast<double>(wpp) * mean * mean;
     out[p].mean = mean;
-    out[p].variance = wpp > 1 ? std::max(0.0, centered) / static_cast<double>(wpp - 1) : 0.0;
+    out[p].variance = wpp > 1 ? std::max(0.0, m2) / static_cast<double>(wpp - 1) : 0.0;
   }
   return out;
 }

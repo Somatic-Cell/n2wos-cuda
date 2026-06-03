@@ -1,0 +1,19 @@
+{
+  "description": "Boundary texture and prefix-depth matrix using one high-sample Pure WoS reference per boundary.",
+  "boundaries": "boundary_texture_stripes_k8,boundary_texture_checker_k8",
+  "depths": "4,8",
+  "mesh": "procedural_bumpy_sphere",
+  "cache_presets": "nano,light",
+  "train_points_list": "5000",
+  "train_steps_per_refresh_list": "50",
+  "reference_wpp": 16384,
+  "reference_chunk_wpp": 512,
+  "slice_width": 512,
+  "slice_height": 512,
+  "slice_view": "xy",
+  "slice_plane": 0,
+  "pure_wpp_list": "8,16,32,64,128",
+  "hybrid_wpp_list": "1,2,4,8,16",
+  "lmc_allocations": "16:8,32:16,32:32,64:32",
+  "threshold_rmse_list": "0.05,0.075,0.1,0.15,0.2"
+}

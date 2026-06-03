@@ -1,15 +1,50 @@
 {
   "purpose": "Reference-based 512x512 slice time-to-MSE benchmark using a high-sample Pure WoS numerical reference.",
   "mesh": "procedural_bumpy_sphere",
-  "boundary": "external_charges_shell_k16",
+  "boundary": "boundary_texture_stripes_k16",
   "cache_preset": "nano",
   "train_points": 5000,
-  "reference_wpp": 512,
+  "reference_wpp": 16384,
   "depth_m": 4,
   "slice_width": 512,
   "slice_height": 512,
-  "pure_wpp_list": [8, 16, 32, 64, 128],
-  "nc_hybrid_wpp_list": [1, 2, 4, 8, 16],
-  "lmc_allocations": [[16, 8], [32, 16], [32, 32], [64, 32]],
-  "threshold_rmse_list": [0.03, 0.05, 0.075, 0.1]
+  "pure_wpp_list": [
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "nc_hybrid_wpp_list": [
+    1,
+    2,
+    4,
+    8,
+    16
+  ],
+  "lmc_allocations": [
+    [
+      16,
+      8
+    ],
+    [
+      32,
+      16
+    ],
+    [
+      32,
+      32
+    ],
+    [
+      64,
+      32
+    ]
+  ],
+  "threshold_rmse_list": [
+    0.03,
+    0.05,
+    0.075,
+    0.1
+  ],
+  "reference_chunk_wpp": 512
 }

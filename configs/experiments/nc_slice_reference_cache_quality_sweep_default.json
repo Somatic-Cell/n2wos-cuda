@@ -1,0 +1,19 @@
+{
+  "description": "Sweep cache quality while reusing an existing high-sample Pure WoS slice reference.",
+  "reference_estimates_csv": "results/nc_slice_ref_bumpy_nano_texture_stripes16_m4/estimates/reference_pure_estimates.csv",
+  "mesh": "procedural_bumpy_sphere",
+  "boundary": "boundary_texture_stripes_k16",
+  "cache_presets": "nano,light,baseline",
+  "train_points_list": "5000,20000",
+  "train_steps_per_refresh_list": "50,250,1000",
+  "label_refreshes": 4,
+  "walks_per_label_refresh": 16,
+  "depth_m": 4,
+  "slice_width": 512,
+  "slice_height": 512,
+  "slice_view": "xy",
+  "slice_plane": 0,
+  "hybrid_wpp_list": "4,8,16",
+  "lmc_allocations": "16:8,32:16,32:32,64:32",
+  "threshold_rmse_list": "0.03,0.05,0.075,0.1"
+}

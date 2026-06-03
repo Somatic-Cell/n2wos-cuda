@@ -1,0 +1,17 @@
+{
+  "executable": "./build/cuda-release-cubql-tcnn/n2wos_eval_tcnn_nc_wos",
+  "output_dir": "results/cache_slice_visualization_stripes16",
+  "mesh": "procedural_bumpy_sphere",
+  "boundary": "boundary_texture_stripes_k16",
+  "cache_preset": "light",
+  "train_points": 20000,
+  "label_refreshes": 4,
+  "walks_per_label_refresh": 16,
+  "train_steps_per_refresh": 1000,
+  "depth_m": 0,
+  "slice_width": 512,
+  "slice_height": 512,
+  "slice_view": "xy",
+  "slice_plane": 0,
+  "reference_estimates_csv": ""
+}

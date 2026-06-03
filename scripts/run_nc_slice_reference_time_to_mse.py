@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Reference-based slice time-to-MSE runner for NC/2LMC WoS.
 
-This runner uses a high-sample Pure WoS run as a numerical reference, then
-compares low-budget Pure WoS, NC-WoS, and NC+2LMC estimates against that same
-reference point set. It intentionally avoids analytic exact solutions for the
-reported MSE.
+This runner uses one or more high-sample Pure WoS chunks as a numerical reference,
+then compares low-budget Pure WoS, NC-WoS, and NC+2LMC estimates against that
+same reference point set. It intentionally avoids analytic exact solutions for
+the reported MSE. The reference is chunked so large totals such as 2^14 walks
+per pixel do not overflow executable-side sample counters.
 """
 from __future__ import annotations
 
@@ -53,6 +54,91 @@ def read_estimates(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+def write_reference_estimates(path: Path, rows: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = ['point_id', 'x', 'y', 'z', 'analytic_value', 'pure_mean', 'pure_sample_variance', 'reference_wpp']
+    with path.open('w', encoding='utf-8', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+
+
+def combine_reference_chunks(chunk_paths: List[Path], chunk_wpps: List[int], out_path: Path) -> Tuple[List[float], List[float], int]:
+    if not chunk_paths:
+        raise RuntimeError('no reference chunks to combine')
+    if len(chunk_paths) != len(chunk_wpps):
+        raise RuntimeError('chunk path/wpp count mismatch')
+
+    # Stream chunks one at a time and merge per-point statistics with the
+    # Chan/Welford parallel variance formula.  This avoids holding all reference
+    # chunks in memory and avoids reconstructing large references via sum/sum_sq.
+    first_rows = read_estimates(chunk_paths[0])
+    n_points = len(first_rows)
+    if n_points == 0:
+        raise RuntimeError('empty reference estimates')
+
+    counts = [0.0] * n_points
+    means = [0.0] * n_points
+    m2s = [0.0] * n_points
+
+    def merge_rows(rows: List[Dict[str, str]], wpp: int, path: Path) -> None:
+        if len(rows) != n_points:
+            raise RuntimeError(f'reference chunk row count mismatch in {path}: {len(rows)} vs {n_points}')
+        if wpp <= 0:
+            raise RuntimeError(f'invalid reference chunk wpp {wpp} in {path}')
+        nb = float(wpp)
+        for i, row in enumerate(rows):
+            mb = float(row['pure_mean'])
+            vb = float(row.get('pure_sample_variance', 0.0))
+            if vb < 0.0 and vb > -1e-12:
+                vb = 0.0
+            if vb < 0.0:
+                raise RuntimeError(f'negative reference chunk variance at point {i} in {path}: {vb}')
+            m2b = (nb - 1.0) * vb if wpp > 1 else 0.0
+
+            na = counts[i]
+            if na == 0.0:
+                counts[i] = nb
+                means[i] = mb
+                m2s[i] = m2b
+                continue
+
+            ma = means[i]
+            n = na + nb
+            delta = mb - ma
+            means[i] = ma + delta * (nb / n)
+            m2s[i] += m2b + delta * delta * (na * nb / n)
+            counts[i] = n
+
+    merge_rows(first_rows, chunk_wpps[0], chunk_paths[0])
+    for path, wpp in zip(chunk_paths[1:], chunk_wpps[1:]):
+        merge_rows(read_estimates(path), wpp, path)
+
+    total_wpp = int(sum(chunk_wpps))
+    combined_rows: List[Dict[str, Any]] = []
+    variances: List[float] = []
+    for i in range(n_points):
+        mean = means[i]
+        var = m2s[i] / float(max(1.0, counts[i] - 1.0))
+        if var < 0.0 and var > -1e-12:
+            var = 0.0
+        base = first_rows[i]
+        combined_rows.append({
+            'point_id': base.get('point_id', i),
+            'x': base.get('x', ''),
+            'y': base.get('y', ''),
+            'z': base.get('z', ''),
+            'analytic_value': base.get('analytic_value', ''),
+            'pure_mean': mean,
+            'pure_sample_variance': var,
+            'reference_wpp': total_wpp,
+        })
+        variances.append(var)
+    write_reference_estimates(out_path, combined_rows)
+    return means, variances, total_wpp
+
+
 def mse_vs_reference(rows: List[Dict[str, str]], ref: List[float], column: str) -> Tuple[float, float, float, float]:
     if len(rows) != len(ref):
         raise RuntimeError(f'row count mismatch for {column}: {len(rows)} vs reference {len(ref)}')
@@ -91,7 +177,7 @@ def main() -> int:
     ap.add_argument('--bumpy-stacks', type=int, default=128)
     ap.add_argument('--bumpy-slices', type=int, default=256)
     ap.add_argument('--bumpy-amplitude', type=float, default=0.15)
-    ap.add_argument('--boundary', default='external_charges_shell_k16')
+    ap.add_argument('--boundary', default='boundary_texture_stripes_k16')
     ap.add_argument('--label-source', default='wos_supervision')
     ap.add_argument('--cache-preset', default='nano')
     ap.add_argument('--train-points', type=int, default=5000)
@@ -105,7 +191,8 @@ def main() -> int:
     ap.add_argument('--slice-plane', default='0')
     ap.add_argument('--slice-padding-fraction', default='0.02')
     ap.add_argument('--slice-preserve-world-aspect', type=int, default=1)
-    ap.add_argument('--reference-wpp', type=int, default=512)
+    ap.add_argument('--reference-wpp', type=int, default=16384, help='total Pure WoS walks per point for the numerical reference')
+    ap.add_argument('--reference-chunk-wpp', type=int, default=512, help='walks per point per reference chunk; keeps per-run sample counts below int limits')
     ap.add_argument('--reference-seed', type=int, default=987654321)
     ap.add_argument('--pure-wpp-list', default='8,16,32,64,128')
     ap.add_argument('--nc-hybrid-wpp-list', default='1,2,4,8,16')
@@ -155,33 +242,51 @@ def main() -> int:
     if args.mesh_path:
         common += ['--mesh-path', args.mesh_path]
 
-    # 1. High-sample Pure WoS reference.
-    ref_json = runs_dir / 'reference_pure.json'
-    ref_prefix = estimates_dir / 'reference_pure'
-    if not (args.skip_existing and ref_json.exists() and Path(str(ref_prefix) + '_estimates.csv').exists()):
+    # 1. High-sample Pure WoS reference, chunked to avoid sample-count overflow.
+    ref_combined_csv = estimates_dir / 'reference_pure_estimates.csv'
+    ref_chunk_paths: List[Path] = []
+    ref_chunk_wpps: List[int] = []
+    reference_commands: List[Dict[str, Any]] = []
+    remaining = int(args.reference_wpp)
+    chunk_index = 0
+    while remaining > 0:
+        chunk_wpp = min(int(args.reference_chunk_wpp), remaining)
+        if chunk_wpp <= 0:
+            raise RuntimeError('--reference-chunk-wpp must be positive')
+        label = f'reference_pure_chunk{chunk_index:03d}_wpp{chunk_wpp}'
+        ref_json = runs_dir / f'{label}.json'
+        ref_prefix = estimates_dir / label
+        ref_csv = Path(str(ref_prefix) + '_estimates.csv')
         cmd = common + [
             '--train-points', '128',
             '--label-refreshes', '1',
             '--walks-per-label-refresh', '1',
             '--train-steps-per-refresh', '0',
             '--skip-training', '1',
-            '--pure-walks-per-point', str(args.reference_wpp),
+            '--pure-walks-per-point', str(chunk_wpp),
             '--hybrid-walks-per-point', '1',
             '--enable-2lmc', '0',
             '--coarse-walks-per-point', '1',
             '--residual-walks-per-point', '1',
-            '--seed', str(args.reference_seed),
+            '--seed', str(args.reference_seed + 100003 * chunk_index),
             '--slice-output-prefix', str(out_dir / 'slice'),
             '--save-estimates-prefix', str(ref_prefix),
             '--output', str(ref_json),
         ]
-        run(cmd, args.dry_run)
+        reference_commands.append({'method': 'reference_pure', 'label': label, 'wpp': chunk_wpp, 'command': cmd})
+        if not (args.skip_existing and ref_json.exists() and ref_csv.exists()):
+            run(cmd, args.dry_run)
+        ref_chunk_paths.append(ref_csv)
+        ref_chunk_wpps.append(chunk_wpp)
+        remaining -= chunk_wpp
+        chunk_index += 1
 
-    ref_rows = read_estimates(Path(str(ref_prefix) + '_estimates.csv')) if not args.dry_run else []
-    ref_values = [float(r['pure_mean']) for r in ref_rows]
-    ref_var = [float(r.get('pure_sample_variance', 0.0)) for r in ref_rows]
+    if not args.dry_run:
+        ref_values, ref_var, combined_reference_wpp = combine_reference_chunks(ref_chunk_paths, ref_chunk_wpps, ref_combined_csv)
+    else:
+        ref_values, ref_var, combined_reference_wpp = [], [], int(args.reference_wpp)
     mean_ref_var = sum(ref_var) / len(ref_var) if ref_var else 0.0
-    reference_rmse_floor = math.sqrt(max(0.0, mean_ref_var / float(args.reference_wpp))) if ref_var else 0.0
+    reference_rmse_floor = math.sqrt(max(0.0, mean_ref_var / float(max(1, combined_reference_wpp)))) if ref_var else 0.0
 
     points: List[Dict[str, Any]] = []
     commands: List[Dict[str, Any]] = []
@@ -207,7 +312,7 @@ def main() -> int:
             'training_ms': training_ms,
             'training_plus_solve_ms': solve_ms + training_ms,
             'default_time_ms': total_ms,
-            'reference_wpp': args.reference_wpp,
+            'reference_wpp': combined_reference_wpp,
             'reference_rmse_floor_estimate': reference_rmse_floor,
             'json_path': str(json_path),
             'estimates_csv': str(prefix) + '_estimates.csv',
@@ -293,7 +398,8 @@ def main() -> int:
             add_point('nc_2lmc', label, json_path, prefix, 'nc_2lmc_mean', ('runs', 'nc_2lmc'), True)
 
     if args.dry_run:
-        manifest = {'arguments': vars(args), 'commands': commands, 'dry_run': True}
+        manifest = {'arguments': vars(args), 'reference_commands': reference_commands, 'reference_commands': reference_commands,
+        'commands': commands, 'dry_run': True}
         (out_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         return 0
 
@@ -317,14 +423,16 @@ def main() -> int:
         'schema': 'n2wos_reference_slice_time_to_mse_v1',
         'arguments': vars(args),
         'reference': {
-            'json_path': str(ref_json),
-            'estimates_csv': str(ref_prefix) + '_estimates.csv',
-            'reference_wpp': args.reference_wpp,
+            'estimates_csv': str(ref_combined_csv),
+            'reference_chunk_wpp': args.reference_chunk_wpp,
+            'reference_chunks': [str(p) for p in ref_chunk_paths],
+            'reference_wpp': combined_reference_wpp,
             'reference_rmse_floor_estimate': reference_rmse_floor,
             'mean_reference_sample_variance': mean_ref_var,
         },
         'points': points,
         'thresholds': thresh_rows,
+        'reference_commands': reference_commands,
         'commands': commands,
         'limitations': {
             'reference_is_monte_carlo': True,

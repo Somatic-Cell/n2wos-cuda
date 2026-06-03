@@ -1184,6 +1184,10 @@ constexpr int kNcBcHarmonicZebraK8 = 4;
 constexpr int kNcBcHarmonicZebraK12 = 5;
 constexpr int kNcBcExternalShellK8 = 6;
 constexpr int kNcBcExternalShellK16 = 7;
+constexpr int kNcBcTextureStripesK8 = 8;
+constexpr int kNcBcTextureStripesK16 = 9;
+constexpr int kNcBcTextureCheckerK8 = 10;
+constexpr int kNcBcTextureCheckerK16 = 11;
 constexpr int kNcLabelExact = 0;
 constexpr int kNcLabelWos = 1;
 
@@ -1203,11 +1207,33 @@ __host__ __device__ inline float nc_complex_power_real(float x, float y, int k) 
   return ar;
 }
 
+__host__ __device__ inline float nc_boundary_texture_stripes(DeviceVec3 p, int k) {
+  const float pi = 3.14159265358979323846f;
+  const float u = 0.83f * p.x + 0.41f * p.y + 0.29f * p.z;
+  const float v = -0.21f * p.x + 0.77f * p.y - 0.43f * p.z;
+  const float a = sinf(static_cast<float>(k) * pi * u);
+  const float b = 0.45f * sinf(static_cast<float>(k / 2 + 1) * pi * v + 0.7f);
+  const float c = 0.25f * cosf(static_cast<float>(k + 3) * pi * (0.35f * p.x - 0.62f * p.z));
+  return a + b + c;
+}
+
+__host__ __device__ inline float nc_boundary_texture_checker(DeviceVec3 p, int k) {
+  const float pi = 3.14159265358979323846f;
+  const float sx = sinf(static_cast<float>(k) * pi * p.x);
+  const float sy = sinf(static_cast<float>(k) * pi * p.y + 0.31f);
+  const float sz = sinf(static_cast<float>(k / 2 + 1) * pi * p.z - 0.17f);
+  return tanhf(2.25f * sx * sy) + 0.25f * sz;
+}
+
 __host__ __device__ inline float nc_boundary_device(DeviceVec3 p, int mode) {
   if (mode == kNcBcHarmonic) return p.x * p.x - p.y * p.y;
   if (mode == kNcBcHarmonicZebraK4) return nc_complex_power_real(p.x, p.y, 4);
   if (mode == kNcBcHarmonicZebraK8) return nc_complex_power_real(p.x, p.y, 8);
   if (mode == kNcBcHarmonicZebraK12) return nc_complex_power_real(p.x, p.y, 12);
+  if (mode == kNcBcTextureStripesK8) return nc_boundary_texture_stripes(p, 8);
+  if (mode == kNcBcTextureStripesK16) return nc_boundary_texture_stripes(p, 16);
+  if (mode == kNcBcTextureCheckerK8) return nc_boundary_texture_checker(p, 8);
+  if (mode == kNcBcTextureCheckerK16) return nc_boundary_texture_checker(p, 16);
   float value = 0.0f;
 #define N2WOS_ADD_CHARGE(q, ax, ay, az) \
   do { \
@@ -1573,6 +1599,10 @@ int nc_boundary_to_device(NcBoundaryMode mode) {
     case NcBoundaryMode::HarmonicZebraK12: return kNcBcHarmonicZebraK12;
     case NcBoundaryMode::ExternalChargesShellK8: return kNcBcExternalShellK8;
     case NcBoundaryMode::ExternalChargesShellK16: return kNcBcExternalShellK16;
+    case NcBoundaryMode::BoundaryTextureStripesK8: return kNcBcTextureStripesK8;
+    case NcBoundaryMode::BoundaryTextureStripesK16: return kNcBcTextureStripesK16;
+    case NcBoundaryMode::BoundaryTextureCheckerK8: return kNcBcTextureCheckerK8;
+    case NcBoundaryMode::BoundaryTextureCheckerK16: return kNcBcTextureCheckerK16;
   }
   throw std::runtime_error("unknown NC boundary mode");
 }
@@ -1618,6 +1648,10 @@ const char* nc_boundary_mode_name(NcBoundaryMode mode) {
     case NcBoundaryMode::HarmonicZebraK12: return "harmonic_zebra_k12";
     case NcBoundaryMode::ExternalChargesShellK8: return "external_charges_shell_k8";
     case NcBoundaryMode::ExternalChargesShellK16: return "external_charges_shell_k16";
+    case NcBoundaryMode::BoundaryTextureStripesK8: return "boundary_texture_stripes_k8";
+    case NcBoundaryMode::BoundaryTextureStripesK16: return "boundary_texture_stripes_k16";
+    case NcBoundaryMode::BoundaryTextureCheckerK8: return "boundary_texture_checker_k8";
+    case NcBoundaryMode::BoundaryTextureCheckerK16: return "boundary_texture_checker_k16";
   }
   return "unknown";
 }
@@ -1632,6 +1666,10 @@ NcBoundaryMode parse_nc_boundary_mode(const char* text) {
   if (s == "zebra12" || s == "harmonic_zebra_k12") return NcBoundaryMode::HarmonicZebraK12;
   if (s == "shell8" || s == "external_charges_shell_k8" || s == "charges_shell_k8") return NcBoundaryMode::ExternalChargesShellK8;
   if (s == "shell16" || s == "external_charges_shell_k16" || s == "charges_shell_k16") return NcBoundaryMode::ExternalChargesShellK16;
+  if (s == "texture_stripes_k8" || s == "boundary_texture_stripes_k8" || s == "stripes8" || s == "stripes_k8") return NcBoundaryMode::BoundaryTextureStripesK8;
+  if (s == "texture_stripes_k16" || s == "boundary_texture_stripes_k16" || s == "stripes16" || s == "stripes_k16") return NcBoundaryMode::BoundaryTextureStripesK16;
+  if (s == "texture_checker_k8" || s == "boundary_texture_checker_k8" || s == "checker8" || s == "checker_k8") return NcBoundaryMode::BoundaryTextureCheckerK8;
+  if (s == "texture_checker_k16" || s == "boundary_texture_checker_k16" || s == "checker16" || s == "checker_k16") return NcBoundaryMode::BoundaryTextureCheckerK16;
   throw std::runtime_error("unknown NC boundary mode: " + s);
 }
 

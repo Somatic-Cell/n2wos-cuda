@@ -20,6 +20,10 @@ enum class NcBoundaryMode {
   HarmonicZebraK12 = 5,
   ExternalChargesShellK8 = 6,
   ExternalChargesShellK16 = 7,
+  BoundaryTextureStripesK8 = 8,
+  BoundaryTextureStripesK16 = 9,
+  BoundaryTextureCheckerK8 = 10,
+  BoundaryTextureCheckerK16 = 11,
 };
 
 enum class NcLabelSource {
