@@ -5,9 +5,10 @@
   "cache_preset": "nano",
   "label_source": "wos_supervision",
   "train_points_list": [20000],
+  "train_sampler": "rejection",
   "label_refreshes": 4,
-  "walks_per_label_refresh": 16,
-  "train_steps_per_refresh": 50,
+  "walks_per_label_refresh": 50,
+  "train_steps_per_refresh": 5000,
   "depth_m": 4,
   "slice": {
     "width": 512,

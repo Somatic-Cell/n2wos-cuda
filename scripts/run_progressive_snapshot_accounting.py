@@ -274,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--cache-preset', default='nano')
     p.add_argument('--train-points', type=int, default=20000)
     p.add_argument('--label-refreshes', type=int, default=4)
-    p.add_argument('--walks-per-label-refresh', type=int, default=16)
+    p.add_argument('--walks-per-label-refresh', type=int, default=50)
 
     p.add_argument('--eval-mode', choices=['ball', 'slice'], default='slice')
     p.add_argument('--eval-points', type=int, default=8192)

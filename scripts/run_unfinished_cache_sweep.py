@@ -205,7 +205,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     p.add_argument('--train-points', type=int, default=20000)
     p.add_argument('--eval-points', type=int, default=8192)
     p.add_argument('--label-refreshes', type=int, default=4)
-    p.add_argument('--walks-per-label-refresh', type=int, default=16)
+    p.add_argument('--walks-per-label-refresh', type=int, default=50)
     p.add_argument('--train-steps-per-refresh-list', type=parse_int_list, default=parse_int_list('0,50,100,250,500,1000'))
     p.add_argument('--pure-walks-per-point', type=int, default=64)
     p.add_argument('--hybrid-walks-per-point', type=int, default=4)

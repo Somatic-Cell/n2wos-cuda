@@ -63,9 +63,11 @@ struct Options {
   float slice_v_max = 1.0f;
   float slice_padding_fraction = 0.02f;
   std::string slice_output_prefix;
+  std::string train_sampler = "rejection";
+  std::string save_train_points_prefix;
   int label_refreshes = 4;
-  int walks_per_label_refresh = 16;
-  int train_steps_per_refresh = 1000;
+  int walks_per_label_refresh = 50;
+  int train_steps_per_refresh = 5000;
   int pure_walks_per_point = 64;
   int hybrid_walks_per_point = 4;
   int coarse_walks_per_point = 64;
@@ -239,6 +241,8 @@ void usage(const char* argv0) {
             << "  --label-source wos_supervision|exact_analytic\n"
             << "  --cache-preset baseline|light|nano|heavy|xlarge|custom\n"
             << "  --train-points <int> --eval-points <int>\n"
+            << "  --train-sampler rejection|ball   (default: rejection, paper-like domain interior rejection sampling)\n"
+            << "  --save-train-points-prefix <prefix>  write accepted training points CSV\n"
             << "  --label-refreshes <int> --walks-per-label-refresh <int>\n"
             << "  --train-steps-per-refresh <int>\n"
             << "  --pure-walks-per-point <int> --hybrid-walks-per-point <int>\n"
@@ -246,7 +250,9 @@ void usage(const char* argv0) {
             << "  --depth-m <int> --enable-2lmc 0|1 --output <path>\n"
             << "  --save-estimates-prefix <prefix>  write per-point estimate CSV\n"
             << "  --skip-training 0|1              skip label generation/training; for pure reference runs only\n"
-            << "  --eval-use-train-points 0|1     evaluate exactly on the training points for overfit diagnostics\n";
+            << "  --eval-use-train-points 0|1     evaluate exactly on the training points for overfit diagnostics\n"
+            << "\nPaper-like training defaults: --train-sampler rejection --train-points 20000 "
+            << "--walks-per-label-refresh 50 --label-refreshes 4 --train-steps-per-refresh 5000\n";
 }
 
 Options parse(int argc, char** argv) {
@@ -266,8 +272,10 @@ Options parse(int argc, char** argv) {
     else if (a == "--label-source") { const auto v=require_value(i,argc,argv); o.label_source = n2wos::parse_nc_label_source(v.c_str()); }
     else if (a == "--cache-preset") apply_cache_preset(o, require_value(i,argc,argv));
     else if (a == "--train-points") o.train_points = std::stoi(require_value(i,argc,argv));
+    else if (a == "--train-sampler") { o.train_sampler = normalize_mode_text(require_value(i,argc,argv)); if (o.train_sampler == "bbox_rejection") o.train_sampler = "rejection"; if (o.train_sampler != "rejection" && o.train_sampler != "ball") throw std::runtime_error("--train-sampler must be rejection or ball"); }
+    else if (a == "--save-train-points-prefix") o.save_train_points_prefix = require_value(i,argc,argv);
     else if (a == "--eval-points") o.eval_points = std::stoi(require_value(i,argc,argv));
-    else if (a == "--eval-mode" || a == "--eval-sampler") { o.eval_mode = require_value(i,argc,argv); if (o.eval_mode != "ball" && o.eval_mode != "slice") throw std::runtime_error("--eval-mode must be ball or slice"); }
+    else if (a == "--eval-mode" || a == "--eval-sampler") { o.eval_mode = require_value(i,argc,argv); if (o.eval_mode != "ball" && o.eval_mode != "slice" && o.eval_mode != "train_points") throw std::runtime_error("--eval-mode must be ball, slice, or train_points"); }
     else if (a == "--slice-width") o.slice_width = std::stoi(require_value(i,argc,argv));
     else if (a == "--slice-height") o.slice_height = std::stoi(require_value(i,argc,argv));
     else if (a == "--slice-view") { o.slice_view = require_value(i,argc,argv); if (o.slice_view != "xy" && o.slice_view != "xz" && o.slice_view != "yz") throw std::runtime_error("--slice-view must be xy, xz, or yz"); }
@@ -362,6 +370,121 @@ SliceEvalSet make_slice_eval_points(const Options& opt,const n2wos::Mesh& mesh,c
 std::string default_slice_prefix(const Options& opt){ if(!opt.slice_output_prefix.empty()) return opt.slice_output_prefix; std::filesystem::path p(opt.output); if(p.extension()==".json") p.replace_extension(""); return p.string()+"_slice"; }
 void write_slice_mask_ppm(const std::string& prefix,const SliceEvalSet& slice){ if(prefix.empty()) return; const std::filesystem::path out_path(prefix+"_mask.ppm"); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(out_path,std::ios::binary); if(!out) throw std::runtime_error("failed to open slice mask for writing: "+out_path.string()); out<<"P6\n"<<slice.width<<" "<<slice.height<<"\n255\n"; for(int iy=0;iy<slice.height;++iy){ const int sy=slice.height-1-iy; for(int ix=0;ix<slice.width;++ix){ const bool inside=slice.mask[std::size_t(sy*slice.width+ix)]!=0; const unsigned char c=inside?235:20; out.put(char(c)); out.put(char(c)); out.put(char(c)); } } }
 void write_slice_points_csv(const std::string& prefix,const SliceEvalSet& slice){ if(prefix.empty()) return; const std::filesystem::path out_path(prefix+"_points.csv"); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(out_path); if(!out) throw std::runtime_error("failed to open slice points CSV for writing: "+out_path.string()); out<<"point_id,x,y,z\n"<<std::setprecision(10); for(std::size_t i=0;i<slice.points.size();++i){ const auto& p=slice.points[i]; out<<i<<','<<p.x<<','<<p.y<<','<<p.z<<'\n'; } }
+
+
+struct TrainPointSet {
+  std::vector<n2wos::DeviceVec3> points;
+  std::vector<int> padding_source;
+  std::string sampler = "rejection";
+  int requested_points = 0;
+  int padded_points = 0;
+  int unique_points = 0;
+  unsigned long long candidate_points = 0;
+  unsigned long long accepted_points = 0;
+  double acceptance_rate = 0.0;
+  bool padding_reuses_accepted_points = false;
+  std::string inside_test = "ray_parity_x";
+};
+
+TrainPointSet make_ball_training_points(int requested, int padded, const n2wos::Aabb& bounds, std::uint64_t seed) {
+  TrainPointSet out;
+  out.sampler = "ball";
+  out.requested_points = requested;
+  out.padded_points = padded;
+  out.unique_points = padded;
+  out.candidate_points = static_cast<unsigned long long>(padded);
+  out.accepted_points = static_cast<unsigned long long>(padded);
+  out.acceptance_rate = 1.0;
+  out.inside_test = "not_applied_debug_ball_sampler";
+  out.points = make_ball_points(padded, bounds, seed);
+  out.padding_source.resize(out.points.size());
+  for (std::size_t i = 0; i < out.padding_source.size(); ++i) out.padding_source[i] = static_cast<int>(i);
+  return out;
+}
+
+TrainPointSet make_rejection_training_points(int requested,
+                                             int padded,
+                                             const n2wos::Mesh& mesh,
+                                             const n2wos::Aabb& bounds,
+                                             std::uint64_t seed) {
+  if (requested <= 0 || padded < requested) throw std::runtime_error("invalid rejection training point count");
+  TrainPointSet out;
+  out.sampler = "bbox_rejection";
+  out.requested_points = requested;
+  out.padded_points = padded;
+  out.unique_points = requested;
+  out.padding_reuses_accepted_points = padded > requested;
+  out.inside_test = "ray_parity_x";
+  out.points.reserve(static_cast<std::size_t>(padded));
+  out.padding_source.reserve(static_cast<std::size_t>(padded));
+
+  const std::vector<RayTri> tris = make_ray_tris(mesh);
+  std::mt19937_64 rng(seed);
+  std::uniform_real_distribution<float> ux(bounds.min.x, bounds.max.x);
+  std::uniform_real_distribution<float> uy(bounds.min.y, bounds.max.y);
+  std::uniform_real_distribution<float> uz(bounds.min.z, bounds.max.z);
+  const unsigned long long max_candidates = std::max<unsigned long long>(
+      1000000ull,
+      1000ull * static_cast<unsigned long long>(std::max(1, requested)));
+
+  while (static_cast<int>(out.points.size()) < requested) {
+    if (out.candidate_points >= max_candidates) {
+      std::ostringstream err;
+      err << "bbox rejection sampler failed to collect " << requested
+          << " interior points after " << out.candidate_points
+          << " candidates; check that the mesh is closed or use --train-sampler ball only for debugging";
+      throw std::runtime_error(err.str());
+    }
+    const n2wos::Vec3f p{ux(rng), uy(rng), uz(rng)};
+    ++out.candidate_points;
+    if (point_inside_closed_mesh_ray_x(p, tris)) {
+      out.points.push_back({p.x, p.y, p.z});
+      out.padding_source.push_back(static_cast<int>(out.points.size()) - 1);
+      ++out.accepted_points;
+    }
+  }
+  out.acceptance_rate = out.candidate_points > 0
+      ? static_cast<double>(out.accepted_points) / static_cast<double>(out.candidate_points)
+      : 0.0;
+
+  if (padded > requested) {
+    std::uniform_int_distribution<int> pick(0, requested - 1);
+    while (static_cast<int>(out.points.size()) < padded) {
+      const int src = pick(rng);
+      out.points.push_back(out.points[static_cast<std::size_t>(src)]);
+      out.padding_source.push_back(src);
+    }
+  }
+  return out;
+}
+
+TrainPointSet make_training_points(const Options& opt,
+                                   int padded_count,
+                                   const n2wos::Mesh& mesh,
+                                   const n2wos::Aabb& bounds) {
+  if (opt.train_sampler == "ball") {
+    return make_ball_training_points(opt.train_points, padded_count, bounds, static_cast<std::uint64_t>(opt.seed));
+  }
+  if (opt.train_sampler == "rejection") {
+    return make_rejection_training_points(opt.train_points, padded_count, mesh, bounds, static_cast<std::uint64_t>(opt.seed));
+  }
+  throw std::runtime_error("unknown train sampler: " + opt.train_sampler);
+}
+
+void write_train_points_csv(const std::string& prefix, const TrainPointSet& train) {
+  if (prefix.empty()) return;
+  const std::filesystem::path out_path(prefix + "_train_points.csv");
+  if (!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path());
+  std::ofstream out(out_path);
+  if (!out) throw std::runtime_error("failed to open training points CSV for writing: " + out_path.string());
+  out << "point_id,x,y,z,is_padding,padding_source\n" << std::setprecision(10);
+  for (std::size_t i = 0; i < train.points.size(); ++i) {
+    const auto& q = train.points[i];
+    const bool is_padding = static_cast<int>(i) >= train.requested_points;
+    const int source = i < train.padding_source.size() ? train.padding_source[i] : static_cast<int>(i);
+    out << i << ',' << q.x << ',' << q.y << ',' << q.z << ',' << (is_padding ? 1 : 0) << ',' << source << '\n';
+  }
+}
 
 
 n2wos::Vec3f input_min(const n2wos::Aabb& b) { const float pad=0.05f; return {b.min.x-pad*(b.max.x-b.min.x), b.min.y-pad*(b.max.y-b.min.y), b.min.z-pad*(b.max.z-b.min.z)}; }
@@ -562,7 +685,9 @@ int main(int argc, char** argv) {
     n2wos::Mesh mesh=load_mesh(opt); n2wos::NormalizeTransform norm{}; if(opt.normalize) norm=n2wos::normalize_to_unit_radius(mesh); const n2wos::Aabb bounds=n2wos::compute_bounds(mesh); const int deg=count_degenerate(mesh);
     n2wos::CuBqlBvh bvh(mesh,opt.cubql_leaf_size,opt.cubql_build_method);
     const int train_count=static_cast<int>(tcnn::next_multiple(static_cast<uint32_t>(opt.train_points), tcnn::BATCH_SIZE_GRANULARITY));
-    const std::vector<n2wos::DeviceVec3> train_points=make_ball_points(train_count,bounds,static_cast<std::uint64_t>(opt.seed));
+    const TrainPointSet train_set = make_training_points(opt, train_count, mesh, bounds);
+    const std::vector<n2wos::DeviceVec3>& train_points = train_set.points;
+    write_train_points_csv(opt.save_train_points_prefix, train_set);
     SliceEvalSet slice_eval;
     std::vector<n2wos::DeviceVec3> eval_points;
     std::string slice_prefix;
@@ -643,7 +768,7 @@ int main(int argc, char** argv) {
 
     std::filesystem::path out_path(opt.output); if(!out_path.parent_path().empty()) std::filesystem::create_directories(out_path.parent_path()); std::ofstream out(opt.output); if(!out) throw std::runtime_error("failed to open output: "+opt.output); out << std::setprecision(9);
     out << "{\n  \"schema\": \"n2wos_tcnn_nc_wos_eval_v4\",\n  \"patch\": \"0009-add-slice-eval-sampler\",\n  \"generated_at_utc\": " << n2wos::json_quote(now_utc()) << ",\n  \"command_line\": " << n2wos::json_quote(cmd) << ",\n  \"cuda\": " << cuda_json() << ",\n  \"implementation_mode\": {\n    \"solver\": \"neural_cache_wos_and_nc_2lmc_depth_sweep_screening\",\n    \"geometry_backend\": \"cubql_cuda\",\n    \"cache_backend\": \"tiny-cuda-nn_native_cpp\",\n    \"training_schedule\": \"fixed_refresh_count_and_fixed_train_steps\",\n    \"training_labels\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"host_transfer_between_prefix_and_tcnn\": false,\n    \"host_transfer_between_tcnn_and_residual_consumer\": false,\n    \"csv_postprocess\": false,\n    \"python_bindings\": false,\n    \"nc_wos_biased\": true,\n    \"nc_2lmc_correction_enabled\": " << (opt.enable_2lmc?"true":"false") << ",\n    \"nc_and_2lmc_share_depth_m\": true,\n    \"point_sampler\": " << n2wos::json_quote(opt.eval_mode == "slice" ? "fixed_slice_interior_pixels" : (opt.eval_mode == "train_points" ? "training_points_reused_for_eval_sanity" : "inscribed_ball_screening_sampler")) << ",\n    \"production_status\": \"screening_diagnostic_not_final_wall_clock\"\n  },\n";
-    out << "  \"options\": {\n    \"mesh\": " << n2wos::json_quote(opt.mesh) << ",\n    \"mesh_path\": " << n2wos::json_quote(opt.mesh_path) << ",\n    \"boundary_condition\": " << n2wos::json_quote(n2wos::nc_boundary_mode_name(opt.boundary_mode)) << ",\n    \"label_source\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"train_points_requested\": " << opt.train_points << ",\n    \"train_points_padded\": " << train_count << ",\n    \"eval_points_requested\": " << opt.eval_points << ",\n    \"eval_points\": " << eval_count << ",\n    \"eval_mode\": " << n2wos::json_quote(opt.eval_mode) << ",\n    \"eval_use_train_points\": " << (opt.eval_mode == "train_points" || opt.eval_use_train_points ? "true" : "false") << ",\n    \"label_refreshes\": " << opt.label_refreshes << ",\n    \"walks_per_label_refresh\": " << opt.walks_per_label_refresh << ",\n    \"train_steps_per_refresh\": " << opt.train_steps_per_refresh << ",\n    \"pure_walks_per_point\": " << opt.pure_walks_per_point << ",\n    \"hybrid_walks_per_point\": " << opt.hybrid_walks_per_point << ",\n    \"coarse_walks_per_point\": " << opt.coarse_walks_per_point << ",\n    \"residual_walks_per_point\": " << opt.residual_walks_per_point << ",\n    \"depth_m\": " << opt.depth_m << ",\n    \"max_steps\": " << opt.max_steps << ",\n    \"epsilon\": " << opt.epsilon << ",\n    \"cache_preset\": " << n2wos::json_quote(opt.cache_preset) << ",\n    \"network\": " << n2wos::json_quote(opt.network) << ",\n    \"n_levels\": " << opt.n_levels << ",\n    \"n_features_per_level\": " << opt.n_features_per_level << ",\n    \"log2_hashmap_size\": " << opt.log2_hashmap_size << ",\n    \"base_resolution\": " << opt.base_resolution << ",\n    \"per_level_scale\": " << opt.per_level_scale << ",\n    \"n_neurons\": " << opt.n_neurons << ",\n    \"n_hidden_layers\": " << opt.n_hidden_layers << ",\n    \"jit_requested\": " << (opt.jit?"true":"false") << ",\n    \"jit_supported\": " << (jit_supported?"true":"false") << ",\n    \"jit_enabled\": " << (network->jit_fusion()?"true":"false") << "\n  },\n";
+    out << "  \"options\": {\n    \"mesh\": " << n2wos::json_quote(opt.mesh) << ",\n    \"mesh_path\": " << n2wos::json_quote(opt.mesh_path) << ",\n    \"boundary_condition\": " << n2wos::json_quote(n2wos::nc_boundary_mode_name(opt.boundary_mode)) << ",\n    \"label_source\": " << n2wos::json_quote(n2wos::nc_label_source_name(opt.label_source)) << ",\n    \"train_points_requested\": " << opt.train_points << ",\n    \"train_points_padded\": " << train_count << ",\n    \"train_sampler\": " << n2wos::json_quote(opt.train_sampler) << ",\n    \"eval_points_requested\": " << opt.eval_points << ",\n    \"eval_points\": " << eval_count << ",\n    \"eval_mode\": " << n2wos::json_quote(opt.eval_mode) << ",\n    \"eval_use_train_points\": " << (opt.eval_mode == "train_points" || opt.eval_use_train_points ? "true" : "false") << ",\n    \"label_refreshes\": " << opt.label_refreshes << ",\n    \"walks_per_label_refresh\": " << opt.walks_per_label_refresh << ",\n    \"train_steps_per_refresh\": " << opt.train_steps_per_refresh << ",\n    \"pure_walks_per_point\": " << opt.pure_walks_per_point << ",\n    \"hybrid_walks_per_point\": " << opt.hybrid_walks_per_point << ",\n    \"coarse_walks_per_point\": " << opt.coarse_walks_per_point << ",\n    \"residual_walks_per_point\": " << opt.residual_walks_per_point << ",\n    \"depth_m\": " << opt.depth_m << ",\n    \"max_steps\": " << opt.max_steps << ",\n    \"epsilon\": " << opt.epsilon << ",\n    \"cache_preset\": " << n2wos::json_quote(opt.cache_preset) << ",\n    \"network\": " << n2wos::json_quote(opt.network) << ",\n    \"n_levels\": " << opt.n_levels << ",\n    \"n_features_per_level\": " << opt.n_features_per_level << ",\n    \"log2_hashmap_size\": " << opt.log2_hashmap_size << ",\n    \"base_resolution\": " << opt.base_resolution << ",\n    \"per_level_scale\": " << opt.per_level_scale << ",\n    \"n_neurons\": " << opt.n_neurons << ",\n    \"n_hidden_layers\": " << opt.n_hidden_layers << ",\n    \"jit_requested\": " << (opt.jit?"true":"false") << ",\n    \"jit_supported\": " << (jit_supported?"true":"false") << ",\n    \"jit_enabled\": " << (network->jit_fusion()?"true":"false") << "\n  },\n";
     if (opt.eval_mode == "slice") {
       out << "  \"slice_eval\": {\n"
           << "    \"width\": " << slice_eval.width << ",\n"
@@ -665,6 +790,18 @@ int main(int argc, char** argv) {
           << "    \"estimates_csv\": " << n2wos::json_quote(opt.save_estimates_prefix + "_estimates.csv") << "\n"
           << "  },\n";
     }
+    out << "  \"training_point_sampler\": {\n"
+        << "    \"mode\": " << n2wos::json_quote(train_set.sampler) << ",\n"
+        << "    \"requested_points\": " << train_set.requested_points << ",\n"
+        << "    \"padded_points\": " << train_set.padded_points << ",\n"
+        << "    \"unique_points\": " << train_set.unique_points << ",\n"
+        << "    \"candidate_points\": " << train_set.candidate_points << ",\n"
+        << "    \"accepted_points\": " << train_set.accepted_points << ",\n"
+        << "    \"acceptance_rate\": " << train_set.acceptance_rate << ",\n"
+        << "    \"inside_test\": " << n2wos::json_quote(train_set.inside_test) << ",\n"
+        << "    \"padding_reuses_accepted_points\": " << (train_set.padding_reuses_accepted_points ? "true" : "false") << ",\n"
+        << "    \"train_points_csv\": " << n2wos::json_quote(opt.save_train_points_prefix.empty() ? std::string("") : opt.save_train_points_prefix + "_train_points.csv") << "\n"
+        << "  },\n";
     out << "  \"mesh_stats\": {\n    \"name\": " << n2wos::json_quote(mesh.name) << ",\n    \"vertices\": " << mesh.vertices.size() << ",\n    \"triangles\": " << mesh.triangles.size() << ",\n    \"degenerate_triangles\": " << deg << ",\n    \"bounds_min\": [" << bounds.min.x << ", " << bounds.min.y << ", " << bounds.min.z << "],\n    \"bounds_max\": [" << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z << "],\n    \"normalization\": {\"center\": [" << norm.center.x << ", " << norm.center.y << ", " << norm.center.z << "], \"scale\": " << norm.scale << "}\n  },\n";
     out << "  \"bvh_stats\": {\n    \"triangles\": " << bvh.triangle_count() << ",\n    \"nodes\": " << bvh.node_count() << ",\n    \"prim_ids\": " << bvh.prim_id_count() << ",\n    \"leaf_size\": " << bvh.leaf_size() << ",\n    \"build_method\": " << n2wos::json_quote(bvh.build_method()) << ",\n    \"build_milliseconds\": " << bvh.build_milliseconds() << "\n  },\n";
     out << "  \"training\": {\n    \"label_update_ms\": " << label_ms << ",\n    \"tcnn_training_ms\": " << train_ms << ",\n    \"total_training_ms\": " << (label_ms+train_ms) << ",\n    \"host_readback_in_training_loop\": false\n  },\n";

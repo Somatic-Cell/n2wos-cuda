@@ -1,0 +1,6 @@
+{
+  "results_root": "results",
+  "reference_estimates_csv": null,
+  "require_reference": false,
+  "print_summary": true
+}

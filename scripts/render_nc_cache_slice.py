@@ -39,10 +39,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--boundary", default="boundary_texture_stripes_k16")
     p.add_argument("--label-source", default="wos_supervision")
     p.add_argument("--cache-preset", default="nano")
-    p.add_argument("--train-points", type=int, default=5000)
+    p.add_argument("--train-points", type=int, default=20000)
+    p.add_argument("--train-sampler", default="rejection")
     p.add_argument("--label-refreshes", type=int, default=4)
-    p.add_argument("--walks-per-label-refresh", type=int, default=16)
-    p.add_argument("--train-steps-per-refresh", type=int, default=1000)
+    p.add_argument("--walks-per-label-refresh", type=int, default=50)
+    p.add_argument("--train-steps-per-refresh", type=int, default=5000)
     p.add_argument("--learning-rate", type=float, default=None)
     p.add_argument("--n-levels", type=int, default=None)
     p.add_argument("--n-features-per-level", type=int, default=None)
@@ -301,6 +302,7 @@ def main() -> None:
                 "--label-source", args.label_source,
                 "--cache-preset", args.cache_preset,
                 "--train-points", str(args.train_points),
+                "--train-sampler", args.train_sampler,
                 "--eval-mode", "slice",
                 "--slice-width", str(args.slice_width),
                 "--slice-height", str(args.slice_height),

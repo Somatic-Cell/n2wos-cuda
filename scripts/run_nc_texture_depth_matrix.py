@@ -114,10 +114,10 @@ def main() -> int:
     ap.add_argument('--depths', default='4,8')
     ap.add_argument('--label-source', default='wos_supervision')
     ap.add_argument('--cache-presets', default='nano,light')
-    ap.add_argument('--train-points-list', default='5000')
-    ap.add_argument('--train-steps-per-refresh-list', default='50')
+    ap.add_argument('--train-points-list', default='20000')
+    ap.add_argument('--train-steps-per-refresh-list', default='5000')
     ap.add_argument('--label-refreshes', type=int, default=4)
-    ap.add_argument('--walks-per-label-refresh', type=int, default=16)
+    ap.add_argument('--walks-per-label-refresh', type=int, default=50)
 
     # The reference runner itself needs a cache/training setting because it uses the same executable.
     # These settings are not used for reporting unless the caller inspects the reference runner's own output.

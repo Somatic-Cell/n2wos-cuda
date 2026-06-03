@@ -1,0 +1,19 @@
+{
+  "purpose": "Screen boundary/slice pairs by spatial frequency of the high-sample Pure WoS reference field before running NC/2LMC.",
+  "mesh": "procedural_bumpy_sphere",
+  "boundaries": "boundary_texture_stripes_k8,boundary_texture_stripes_k16,boundary_texture_checker_k8,boundary_texture_checker_k16",
+  "slice_views": "xy",
+  "slice_planes": "0,0.25,0.5,0.7",
+  "slice_width": 512,
+  "slice_height": 512,
+  "reference_wpp": 4096,
+  "reference_chunk_wpp": 512,
+  "highpass_radius_fraction": 0.25,
+  "normalize": 1,
+  "bumpy_stacks": 128,
+  "bumpy_slices": 256,
+  "bumpy_amplitude": 0.15,
+  "cubql_build_method": "sah",
+  "cubql_leaf_size": 8,
+  "note": "Script-only fallback. It uses boundary modes already available before the optional k4/k32 C++ extension. Re-run selected cases with reference_wpp=16384 before reporting final MSE curves."
+}

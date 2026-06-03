@@ -261,10 +261,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument('--boundary', default='external_charges_medium')
     parser.add_argument('--label-source', default='wos_supervision')
     parser.add_argument('--cache-preset', default='nano')
-    parser.add_argument('--train-points', type=int, default=5000)
+    parser.add_argument('--train-points', type=int, default=20000)
     parser.add_argument('--label-refreshes', type=int, default=4)
-    parser.add_argument('--walks-per-label-refresh', type=int, default=16)
-    parser.add_argument('--train-steps-per-refresh', type=int, default=50)
+    parser.add_argument('--walks-per-label-refresh', type=int, default=50)
+    parser.add_argument('--train-steps-per-refresh', type=int, default=5000)
 
     parser.add_argument('--depth-m', type=int, default=4)
     parser.add_argument('--slice-width', type=int, default=512)

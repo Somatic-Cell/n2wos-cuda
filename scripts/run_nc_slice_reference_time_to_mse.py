@@ -180,10 +180,11 @@ def main() -> int:
     ap.add_argument('--boundary', default='boundary_texture_stripes_k16')
     ap.add_argument('--label-source', default='wos_supervision')
     ap.add_argument('--cache-preset', default='nano')
-    ap.add_argument('--train-points', type=int, default=5000)
+    ap.add_argument('--train-points', type=int, default=20000)
+    ap.add_argument('--train-sampler', default='rejection')
     ap.add_argument('--label-refreshes', type=int, default=4)
-    ap.add_argument('--walks-per-label-refresh', type=int, default=16)
-    ap.add_argument('--train-steps-per-refresh', type=int, default=50)
+    ap.add_argument('--walks-per-label-refresh', type=int, default=50)
+    ap.add_argument('--train-steps-per-refresh', type=int, default=5000)
     ap.add_argument('--depth-m', type=int, default=4)
     ap.add_argument('--slice-width', type=int, default=512)
     ap.add_argument('--slice-height', type=int, default=512)
@@ -221,6 +222,7 @@ def main() -> int:
         '--boundary', args.boundary,
         '--label-source', args.label_source,
         '--cache-preset', args.cache_preset,
+        '--train-sampler', args.train_sampler,
         '--eval-mode', 'slice',
         '--slice-width', str(args.slice_width),
         '--slice-height', str(args.slice_height),
