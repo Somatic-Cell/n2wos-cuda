@@ -1620,6 +1620,9 @@ __global__ void nc_combine_cache_and_residual_kernel(const float* __restrict__ c
     nc_values[tid] = a + c;
     residual_values[tid] = continuation_values[tid] - c;
   } else {
+  if (mode == NcBoundaryMode::PoissonFiglikeHfX5) {
+    return 32;
+  }
 
     nc_values[tid] = boundary_values[tid];
     residual_values[tid] = 0.0f;
@@ -1627,9 +1630,6 @@ __global__ void nc_combine_cache_and_residual_kernel(const float* __restrict__ c
 }
 
 int nc_boundary_to_device(NcBoundaryMode mode) {
-  if (mode == NcBoundaryMode::PoissonFiglikeHfX5) {
-    return 32;
-  }
   if (mode == NcBoundaryMode::PoissonMultiscale) {
     return kNcPoissonMultiscaleMode;
   }
@@ -1768,9 +1768,6 @@ NcBoundaryMode parse_nc_boundary_mode(const char* text) {
   }
 
   const std::string s(text ? text : "");
-  if (s == "poisson_figlike_hf_x5" || s == "poisson_hf_x5" || s == "poisson_figlike_x5") {
-    return NcBoundaryMode::PoissonFiglikeHfX5;
-  }
   if (s == "constant" || s == "constant_one" || s == "one" || s == "const1") return NcBoundaryMode::ConstantOne;
   if (s == "harmonic" || s == "harmonic_x2_minus_y2") return NcBoundaryMode::HarmonicX2MinusY2;
   if (s == "medium" || s == "external_charges_medium" || s == "charges_medium") return NcBoundaryMode::ExternalChargesMedium;

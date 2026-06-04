@@ -25,13 +25,6 @@ enum class NcBoundaryMode {
   BoundaryTextureCheckerK8 = 10,
   BoundaryTextureCheckerK16 = 11,
   ConstantOne = 12,
-  HarmonicMixtureSmooth = 13,
-  HarmonicMixtureFiglike = 14,
-  HarmonicMixtureMultiscale = 15,
-  HarmonicMixtureFiglikeHF = 16,
-  PoissonMultiscale = 30,
-  PoissonFiglikeHf = 31,
-  PoissonFiglikeHfX5 = 32,
 };
 
 enum class NcLabelSource {

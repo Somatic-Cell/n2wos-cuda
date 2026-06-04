@@ -1,0 +1,15 @@
+{
+  "texture_png": "figures/poisson_figlike_hf/nc_wos_error_texture.png",
+  "estimates_csv": "results/fig_poisson_figlike_hf_wos_m4_c64_r48_estimates.csv",
+  "mask_image": "results/fig_poisson_figlike_hf_wos_m4_c64_r48_slice_mask.ppm",
+  "points_csv": "results/fig_poisson_figlike_hf_wos_m4_c64_r48_slice_points.csv",
+  "value_column": "nc_wos_mean",
+  "subtract_column": "analytic_value",
+  "abs_value": false,
+  "colormap": "coolwarm",
+  "vmin": -0.04395946278,
+  "vmax": 0.04395946278,
+  "inside_pixels": 127001,
+  "width": 512,
+  "height": 512
+}

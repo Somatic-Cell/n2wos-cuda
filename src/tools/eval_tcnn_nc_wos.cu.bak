@@ -1,9 +1,7 @@
 #include "n2wos/cubql_bvh.hpp"
-#include "n2wos/nc_poisson_manufactured.hpp"
 #include "n2wos/json.hpp"
 #include "n2wos/mesh.hpp"
 #include "n2wos/tcnn_nc_wos.hpp"
-#include "n2wos/nc_harmonic_mixture.hpp"
 
 #include <tiny-cuda-nn/common_device.h>
 #include <tiny-cuda-nn/config.h>
@@ -166,18 +164,6 @@ std::string normalize_mode_text(std::string s) {
 
 n2wos::NcBoundaryMode parse_nc_boundary_mode_cli(const std::string& text) {
   const std::string s = normalize_mode_text(text);
-  if (s == "poisson_figlike_hf_x5" || s == "poisson_hf_x5" || s == "poisson_figlike_x5") {
-    return n2wos::NcBoundaryMode::PoissonFiglikeHfX5;
-  }
-  if (s == "poisson_multiscale" || s == "manufactured_poisson_multiscale" ||
-      s == "poisson_mscale" || s == "poisson") {
-    return n2wos::NcBoundaryMode::PoissonMultiscale;
-  }
-  if (s == "poisson_figlike_hf" || s == "manufactured_poisson_figlike_hf" ||
-      s == "poisson_hf") {
-    return n2wos::NcBoundaryMode::PoissonFiglikeHf;
-  }
-
   if (s == "constant" || s == "constant_one" || s == "one" || s == "const1") {
     return n2wos::NcBoundaryMode::ConstantOne;
   }
@@ -214,25 +200,7 @@ n2wos::NcBoundaryMode parse_nc_boundary_mode_cli(const std::string& text) {
       s == "boundary_texture_checker16" || s == "boundary_texture_checker_k16") {
     return n2wos::NcBoundaryMode::BoundaryTextureCheckerK16;
   }
-  
-  if (s == "harmonic_mixture_smooth" || s == "mixture_smooth" ||
-      s == "hm_smooth" || s == "fig_smooth") {
-    return n2wos::NcBoundaryMode::HarmonicMixtureSmooth;
-  }
-  if (s == "harmonic_mixture_figlike" || s == "mixture_figlike" ||
-      s == "hm_figlike" || s == "figlike" || s == "fig1" || s == "fig4") {
-    return n2wos::NcBoundaryMode::HarmonicMixtureFiglike;
-  }
-
-  if (s == "harmonic_mixture_multiscale" || s == "mixture_multiscale" ||
-      s == "hmix_multiscale" || s == "multiscale") {
-    return n2wos::NcBoundaryMode::HarmonicMixtureMultiscale;
-  }
-  if (s == "harmonic_mixture_figlike_hf" || s == "mixture_figlike_hf" ||
-      s == "hmix_figlike_hf" || s == "figlike_hf" || s == "fig_hf") {
-    return n2wos::NcBoundaryMode::HarmonicMixtureFiglikeHF;
-  }
-return n2wos::parse_nc_boundary_mode(s.c_str());
+  return n2wos::parse_nc_boundary_mode(s.c_str());
 }
 
 std::vector<float> parse_float_list4(const std::string& text, const std::string& name) {

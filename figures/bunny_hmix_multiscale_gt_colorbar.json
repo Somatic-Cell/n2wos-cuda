@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/bunny_hmix_multiscale_gt_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": 0.02392049693,
+  "vmax": 0.6653627753,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

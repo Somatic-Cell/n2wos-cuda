@@ -1,0 +1,15 @@
+{
+  "texture_png": "figures/zebra_k8_nc_texture.png",
+  "estimates_csv": "figures/zebra_k8_m2_estimates.csv",
+  "mask_image": "figures/zebra_k8_m2_slice_mask.ppm",
+  "points_csv": "figures/zebra_k8_m2_slice_points.csv",
+  "value_column": "nc_wos_mean",
+  "subtract_column": null,
+  "abs_value": false,
+  "colormap": "coolwarm",
+  "vmin": -0.6973644495,
+  "vmax": 0.6545504332,
+  "inside_pixels": 162215,
+  "width": 512,
+  "height": 512
+}

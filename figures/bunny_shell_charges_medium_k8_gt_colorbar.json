@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/bunny_shell_charges_medium_k8_gt_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": -0.6795383096,
+  "vmax": 0.597387135,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

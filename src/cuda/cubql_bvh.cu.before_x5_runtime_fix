@@ -1229,8 +1229,6 @@ __host__ __device__ inline float nc_boundary_texture_checker(DeviceVec3 p, int k
 }
 
 __host__ __device__ inline float nc_boundary_device(DeviceVec3 p, int mode) {
-  if (mode == 32) return nc_poisson_figlike_hf_x5_value(p);
-
   if (nc_poisson_manufactured_is_mode(mode)) {
     return nc_poisson_manufactured_u(p, mode);
   }
@@ -1348,7 +1346,7 @@ __device__ inline float nc_wos_from_point(DeviceVec3 p,
     }
     const DeviceVec3 dir = persistent_sample_unit_sphere(rng);
     const float radius = step_scale * d;
-    __poisson_source_accum += ((boundary_mode == 32) ? nc_poisson_figlike_hf_x5_center_green_contribution(p, radius) : nc_poisson_center_green_contribution(p, radius, boundary_mode));
+    __poisson_source_accum += nc_poisson_center_green_contribution(p, radius, boundary_mode);
     p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
   }
   *steps_taken = max_steps;
@@ -1510,7 +1508,7 @@ __global__ void nc_hybrid_prefix_kernel(const DeviceVec3* __restrict__ eval_poin
     }
     const DeviceVec3 dir = persistent_sample_unit_sphere(&rng);
     const float radius = step_scale * d;
-      __poisson_prefix_source += ((boundary_mode == 32) ? nc_poisson_figlike_hf_x5_center_green_contribution(p, radius) : nc_poisson_center_green_contribution(p, radius, boundary_mode));
+      __poisson_prefix_source += nc_poisson_center_green_contribution(p, radius, boundary_mode);
     p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
   }
 }
@@ -1600,7 +1598,7 @@ __global__ void nc_2lmc_prefix_continue_kernel(const DeviceVec3* __restrict__ ev
 
     const DeviceVec3 dir = persistent_sample_unit_sphere(&rng);
     const float radius = step_scale * d;
-      __poisson_prefix_source += ((boundary_mode == 32) ? nc_poisson_figlike_hf_x5_center_green_contribution(p, radius) : nc_poisson_center_green_contribution(p, radius, boundary_mode));
+      __poisson_prefix_source += nc_poisson_center_green_contribution(p, radius, boundary_mode);
     p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
   }
 }
@@ -1620,16 +1618,12 @@ __global__ void nc_combine_cache_and_residual_kernel(const float* __restrict__ c
     nc_values[tid] = a + c;
     residual_values[tid] = continuation_values[tid] - c;
   } else {
-
     nc_values[tid] = boundary_values[tid];
     residual_values[tid] = 0.0f;
   }
 }
 
 int nc_boundary_to_device(NcBoundaryMode mode) {
-  if (mode == NcBoundaryMode::PoissonFiglikeHfX5) {
-    return 32;
-  }
   if (mode == NcBoundaryMode::PoissonMultiscale) {
     return kNcPoissonMultiscaleMode;
   }
@@ -1703,8 +1697,6 @@ void validate_nc_sample(const NcDeviceSampleOptions& options) {
 const char* nc_boundary_mode_name(NcBoundaryMode mode) {
 
   switch (mode) {
-    case NcBoundaryMode::PoissonFiglikeHfX5: return "poisson_figlike_hf_x5";
-
     case NcBoundaryMode::PoissonMultiscale: return "poisson_multiscale";
     case NcBoundaryMode::PoissonFiglikeHf: return "poisson_figlike_hf";
     case NcBoundaryMode::HarmonicX2MinusY2: return "harmonic_x2_minus_y2";
@@ -1768,9 +1760,6 @@ NcBoundaryMode parse_nc_boundary_mode(const char* text) {
   }
 
   const std::string s(text ? text : "");
-  if (s == "poisson_figlike_hf_x5" || s == "poisson_hf_x5" || s == "poisson_figlike_x5") {
-    return NcBoundaryMode::PoissonFiglikeHfX5;
-  }
   if (s == "constant" || s == "constant_one" || s == "one" || s == "const1") return NcBoundaryMode::ConstantOne;
   if (s == "harmonic" || s == "harmonic_x2_minus_y2") return NcBoundaryMode::HarmonicX2MinusY2;
   if (s == "medium" || s == "external_charges_medium" || s == "charges_medium") return NcBoundaryMode::ExternalChargesMedium;

@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/poisson_figlike_hf_x5/field_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": -0.2464823574,
+  "vmax": 0.2863425016,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

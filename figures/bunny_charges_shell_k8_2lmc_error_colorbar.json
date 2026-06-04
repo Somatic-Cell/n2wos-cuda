@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/bunny_charges_shell_k8_2lmc_error_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": -0.17208563170000002,
+  "vmax": 0.17208563170000002,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

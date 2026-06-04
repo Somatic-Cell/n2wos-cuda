@@ -1,0 +1,15 @@
+{
+  "texture_png": "figures/poisson_figlike_hf_x5/gt_texture.png",
+  "estimates_csv": "results/poisson_figlike_hf_x5_bunny_z012/poisson_figlike_hf_x5_exact_m0_estimates.csv",
+  "mask_image": "results/poisson_figlike_hf_x5_bunny_z012/poisson_figlike_hf_x5_exact_m0_slice_mask.ppm",
+  "points_csv": "results/poisson_figlike_hf_x5_bunny_z012/poisson_figlike_hf_x5_exact_m0_slice_points.csv",
+  "value_column": "analytic_value",
+  "subtract_column": null,
+  "abs_value": false,
+  "colormap": "coolwarm",
+  "vmin": -0.2464823574,
+  "vmax": 0.2863425016,
+  "inside_pixels": 127001,
+  "width": 512,
+  "height": 512
+}

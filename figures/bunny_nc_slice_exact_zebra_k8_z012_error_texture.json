@@ -1,0 +1,15 @@
+{
+  "texture_png": "figures/bunny_nc_slice_exact_zebra_k8_z012_error_texture.png",
+  "estimates_csv": "results/bunny_nc_slice_exact_zebra_k8_z012_estimates.csv",
+  "mask_image": "results/bunny_nc_slice_exact_zebra_k8_z012_slice_mask.ppm",
+  "points_csv": "results/bunny_nc_slice_exact_zebra_k8_z012_slice_points.csv",
+  "value_column": "nc_wos_mean",
+  "subtract_column": "analytic_value",
+  "abs_value": false,
+  "colormap": "coolwarm",
+  "vmin": -0.28027743098,
+  "vmax": 0.28027743098,
+  "inside_pixels": 127001,
+  "width": 512,
+  "height": 512
+}

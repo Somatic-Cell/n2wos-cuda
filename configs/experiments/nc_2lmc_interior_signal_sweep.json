@@ -1,0 +1,34 @@
+{
+  "description": "Default screening matrix for NC+2LMC efficiency. Prefer analytic interior-solution BCs first; use texture/checker modes only with a numerical reference.",
+  "executable": "./build/cuda-release-cubql-tcnn/n2wos_eval_tcnn_nc_wos",
+  "mesh": "procedural_bumpy_sphere",
+  "cubql_build_method": "sah",
+  "label_source": "wos_supervision",
+  "train_sampler": "rejection",
+  "train_points": 20000,
+  "eval_points": 8192,
+  "label_refreshes": 4,
+  "walks_per_label_refresh": 50,
+  "train_steps_per_refresh": 500,
+  "pure_walks_per_point": 64,
+  "hybrid_walks_per_point": 4,
+  "coarse_walks_per_point": 64,
+  "residual_walks_per_point": 32,
+  "depths": [1, 2, 4, 8],
+  "cache_presets": ["nano", "light"],
+  "seeds": [12345, 12346, 12347],
+  "boundaries": [
+    "external_charges_high",
+    "external_charges_shell_k8",
+    "external_charges_shell_k16",
+    "harmonic_zebra_k8",
+    "harmonic_zebra_k12"
+  ],
+  "nonanalytic_boundaries_for_reference_only": [
+    "boundary_texture_checker_k8",
+    "boundary_texture_checker_k16",
+    "boundary_texture_stripes_k8",
+    "boundary_texture_stripes_k16"
+  ],
+  "notes": "If a texture/checker boundary is enabled, evaluate against a high-sample Pure WoS numerical reference, not nc_boundary_value_host(x)."
+}

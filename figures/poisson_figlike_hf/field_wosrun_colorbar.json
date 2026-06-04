@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/poisson_figlike_hf/field_wosrun_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": -0.07582770288,
+  "vmax": 0.03703188896,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

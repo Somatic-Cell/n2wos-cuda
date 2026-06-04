@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/bunny_poisson_multiscale_gt_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": -0.08700215816,
+  "vmax": 0.09555034339,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

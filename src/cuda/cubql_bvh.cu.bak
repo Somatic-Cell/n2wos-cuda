@@ -1,8 +1,6 @@
 #include "n2wos/cubql_bvh.hpp"
-#include "n2wos/nc_poisson_manufactured.hpp"
 #include "n2wos/mesh.hpp"
 #include "n2wos/tcnn_nc_wos.hpp"
-#include "n2wos/nc_harmonic_mixture.hpp"
 #include "n2wos/wos_wavefront.hpp"
 
 #include <cuda_runtime.h>
@@ -1229,28 +1227,6 @@ __host__ __device__ inline float nc_boundary_texture_checker(DeviceVec3 p, int k
 }
 
 __host__ __device__ inline float nc_boundary_device(DeviceVec3 p, int mode) {
-  if (mode == 32) return nc_poisson_figlike_hf_x5_value(p);
-
-  if (nc_poisson_manufactured_is_mode(mode)) {
-    return nc_poisson_manufactured_u(p, mode);
-  }
-
-  if (mode == static_cast<int>(NcBoundaryMode::HarmonicMixtureMultiscale) || mode == 15) {
-    return nc_harmonic_mixture_multiscale_value(p);
-  }
-  if (mode == static_cast<int>(NcBoundaryMode::HarmonicMixtureFiglikeHF) || mode == 16) {
-    return nc_harmonic_mixture_figlike_hf_value(p);
-  }
-
-  // Harmonic mixture manufactured solutions.  Keep these branches early so
-  // both host and device callers can use the explicit device mode ids.
-  if (mode == static_cast<int>(NcBoundaryMode::HarmonicMixtureSmooth) || mode == 13) {
-    return nc_harmonic_mixture_smooth_value(p);
-  }
-  if (mode == static_cast<int>(NcBoundaryMode::HarmonicMixtureFiglike) || mode == 14) {
-    return nc_harmonic_mixture_figlike_value(p);
-  }
-
   if (mode == kNcBcConstantOne) return 1.0f;
   if (mode == kNcBcHarmonic) return p.x * p.x - p.y * p.y;
   if (mode == kNcBcHarmonicZebraK4) return nc_complex_power_real(p.x, p.y, 4);
@@ -1331,8 +1307,6 @@ __device__ inline float nc_wos_from_point(DeviceVec3 p,
                                           int* steps_taken,
                                           int* forced_flag,
                                           int* overflow_flag) {
-  float __poisson_source_accum = 0.0f;
-
   *steps_taken = 0;
   *forced_flag = 0;
   *overflow_flag = 0;
@@ -1344,16 +1318,15 @@ __device__ inline float nc_wos_from_point(DeviceVec3 p,
     if (d <= epsilon || forced || !isfinite(d)) {
       *steps_taken = step;
       *forced_flag = forced ? 1 : 0;
-      return __poisson_source_accum + nc_boundary_device(from_cubql_vec3(cpat.P), boundary_mode);
+      return nc_boundary_device(from_cubql_vec3(cpat.P), boundary_mode);
     }
     const DeviceVec3 dir = persistent_sample_unit_sphere(rng);
     const float radius = step_scale * d;
-    __poisson_source_accum += ((boundary_mode == 32) ? nc_poisson_figlike_hf_x5_center_green_contribution(p, radius) : nc_poisson_center_green_contribution(p, radius, boundary_mode));
     p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
   }
   *steps_taken = max_steps;
   *forced_flag = 1;
-  return __poisson_source_accum + nc_boundary_device(p, boundary_mode);
+  return nc_boundary_device(p, boundary_mode);
 }
 
 __global__ void nc_fill_inputs_kernel(const DeviceVec3* __restrict__ world_points,
@@ -1476,7 +1449,6 @@ __global__ void nc_hybrid_prefix_kernel(const DeviceVec3* __restrict__ eval_poin
                                            (static_cast<std::uint64_t>(walk_id + 1) * 0xbf58476d1ce4e5b9ull));
   if (!rng) rng = 0x853c49e6748fea9bull;
   DeviceVec3 p = eval_points[point_id];
-  float __poisson_prefix_source = 0.0f;
   query_overflow[tid] = 0;
   forced_max_steps[tid] = 0;
   step_count[tid] = 0;
@@ -1488,7 +1460,7 @@ __global__ void nc_hybrid_prefix_kernel(const DeviceVec3* __restrict__ eval_poin
     const float d = sqrtf(fmaxf(cpat.sqrDist, 0.0f));
     const bool forced = step >= max_steps;
     if (d <= epsilon || forced || !isfinite(d)) {
-      boundary_values[tid] = __poisson_prefix_source + nc_boundary_device(from_cubql_vec3(cpat.P), boundary_mode);
+      boundary_values[tid] = nc_boundary_device(from_cubql_vec3(cpat.P), boundary_mode);
       step_count[tid] = step;
       forced_max_steps[tid] = forced ? 1 : 0;
       needs_cache[tid] = 0;
@@ -1504,13 +1476,11 @@ __global__ void nc_hybrid_prefix_kernel(const DeviceVec3* __restrict__ eval_poin
       prefix_inputs[3 * tid + 1] = u.y;
       prefix_inputs[3 * tid + 2] = u.z;
       needs_cache[tid] = 1;
-        boundary_values[tid] = __poisson_prefix_source;
       step_count[tid] = step;
       return;
     }
     const DeviceVec3 dir = persistent_sample_unit_sphere(&rng);
     const float radius = step_scale * d;
-      __poisson_prefix_source += ((boundary_mode == 32) ? nc_poisson_figlike_hf_x5_center_green_contribution(p, radius) : nc_poisson_center_green_contribution(p, radius, boundary_mode));
     p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
   }
 }
@@ -1546,7 +1516,6 @@ __global__ void nc_2lmc_prefix_continue_kernel(const DeviceVec3* __restrict__ ev
   if (!rng) rng = 0x853c49e6748fea9bull;
 
   DeviceVec3 p = eval_points[point_id];
-  float __poisson_prefix_source = 0.0f;
   query_overflow[tid] = 0;
   forced_max_steps[tid] = 0;
   step_count[tid] = 0;
@@ -1565,8 +1534,8 @@ __global__ void nc_2lmc_prefix_continue_kernel(const DeviceVec3* __restrict__ ev
       prefix_inputs[3 * tid + 0] = u.x;
       prefix_inputs[3 * tid + 1] = u.y;
       prefix_inputs[3 * tid + 2] = u.z;
-      boundary_values[tid] = __poisson_prefix_source + boundary;
-      continuation_values[tid] = __poisson_prefix_source + boundary;
+      boundary_values[tid] = boundary;
+      continuation_values[tid] = boundary;
       needs_cache[tid] = 0;
       step_count[tid] = step;
       forced_max_steps[tid] = forced ? 1 : 0;
@@ -1579,7 +1548,6 @@ __global__ void nc_2lmc_prefix_continue_kernel(const DeviceVec3* __restrict__ ev
       prefix_inputs[3 * tid + 1] = u.y;
       prefix_inputs[3 * tid + 2] = u.z;
       needs_cache[tid] = 1;
-        boundary_values[tid] = __poisson_prefix_source;
       int cont_steps = 0, cont_forced = 0, cont_overflow = 0;
       continuation_values[tid] = nc_wos_from_point(p,
                                                    &rng,
@@ -1600,7 +1568,6 @@ __global__ void nc_2lmc_prefix_continue_kernel(const DeviceVec3* __restrict__ ev
 
     const DeviceVec3 dir = persistent_sample_unit_sphere(&rng);
     const float radius = step_scale * d;
-      __poisson_prefix_source += ((boundary_mode == 32) ? nc_poisson_figlike_hf_x5_center_green_contribution(p, radius) : nc_poisson_center_green_contribution(p, radius, boundary_mode));
     p = nc_make_device_vec3(p.x + radius * dir.x, p.y + radius * dir.y, p.z + radius * dir.z);
   }
 }
@@ -1615,42 +1582,16 @@ __global__ void nc_combine_cache_and_residual_kernel(const float* __restrict__ c
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= sample_count) return;
   if (needs_cache[tid]) {
-    const float a = boundary_values[tid];
     const float c = cache_outputs[tid];
-    nc_values[tid] = a + c;
+    nc_values[tid] = c;
     residual_values[tid] = continuation_values[tid] - c;
   } else {
-
     nc_values[tid] = boundary_values[tid];
     residual_values[tid] = 0.0f;
   }
 }
 
 int nc_boundary_to_device(NcBoundaryMode mode) {
-  if (mode == NcBoundaryMode::PoissonFiglikeHfX5) {
-    return 32;
-  }
-  if (mode == NcBoundaryMode::PoissonMultiscale) {
-    return kNcPoissonMultiscaleMode;
-  }
-  if (mode == NcBoundaryMode::PoissonFiglikeHf) {
-    return kNcPoissonFiglikeHfMode;
-  }
-
-  if (mode == NcBoundaryMode::HarmonicMixtureMultiscale) {
-    return static_cast<int>(NcBoundaryMode::HarmonicMixtureMultiscale);
-  }
-  if (mode == NcBoundaryMode::HarmonicMixtureFiglikeHF) {
-    return static_cast<int>(NcBoundaryMode::HarmonicMixtureFiglikeHF);
-  }
-
-  if (mode == NcBoundaryMode::HarmonicMixtureSmooth) {
-    return static_cast<int>(NcBoundaryMode::HarmonicMixtureSmooth);
-  }
-  if (mode == NcBoundaryMode::HarmonicMixtureFiglike) {
-    return static_cast<int>(NcBoundaryMode::HarmonicMixtureFiglike);
-  }
-
   switch (mode) {
     case NcBoundaryMode::HarmonicX2MinusY2: return kNcBcHarmonic;
     case NcBoundaryMode::ExternalChargesMedium: return kNcBcExternalMedium;
@@ -1701,12 +1642,7 @@ void validate_nc_sample(const NcDeviceSampleOptions& options) {
 }  // namespace
 
 const char* nc_boundary_mode_name(NcBoundaryMode mode) {
-
   switch (mode) {
-    case NcBoundaryMode::PoissonFiglikeHfX5: return "poisson_figlike_hf_x5";
-
-    case NcBoundaryMode::PoissonMultiscale: return "poisson_multiscale";
-    case NcBoundaryMode::PoissonFiglikeHf: return "poisson_figlike_hf";
     case NcBoundaryMode::HarmonicX2MinusY2: return "harmonic_x2_minus_y2";
     case NcBoundaryMode::ExternalChargesMedium: return "external_charges_medium";
     case NcBoundaryMode::ExternalChargesHigh: return "external_charges_high";
@@ -1719,58 +1655,13 @@ const char* nc_boundary_mode_name(NcBoundaryMode mode) {
     case NcBoundaryMode::BoundaryTextureStripesK16: return "boundary_texture_stripes_k16";
     case NcBoundaryMode::BoundaryTextureCheckerK8: return "boundary_texture_checker_k8";
     case NcBoundaryMode::BoundaryTextureCheckerK16: return "boundary_texture_checker_k16";
-    
-        case NcBoundaryMode::HarmonicMixtureMultiscale: return "harmonic_mixture_multiscale";
-    case NcBoundaryMode::HarmonicMixtureFiglikeHF: return "harmonic_mixture_figlike_hf";
-case NcBoundaryMode::HarmonicMixtureSmooth: return "harmonic_mixture_smooth";
-    case NcBoundaryMode::HarmonicMixtureFiglike: return "harmonic_mixture_figlike";
-case NcBoundaryMode::ConstantOne: return "constant_one";
+    case NcBoundaryMode::ConstantOne: return "constant_one";
   }
   return "unknown";
 }
 
 NcBoundaryMode parse_nc_boundary_mode(const char* text) {
-  std::string __poisson_s = text ? text : "";
-  for (char& c : __poisson_s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (__poisson_s == "poisson_multiscale" || __poisson_s == "manufactured_poisson_multiscale" ||
-      __poisson_s == "poisson_mscale") return NcBoundaryMode::PoissonMultiscale;
-  if (__poisson_s == "poisson_figlike_hf" || __poisson_s == "manufactured_poisson_figlike_hf" ||
-      __poisson_s == "poisson_hf") return NcBoundaryMode::PoissonFiglikeHf;
-
-  std::string __hmix_extra_s = text ? text : "";
-  for (char& c : __hmix_extra_s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (__hmix_extra_s == "harmonic_mixture_multiscale" ||
-      __hmix_extra_s == "mixture_multiscale" ||
-      __hmix_extra_s == "hmix_multiscale" ||
-      __hmix_extra_s == "multiscale") {
-    return NcBoundaryMode::HarmonicMixtureMultiscale;
-  }
-  if (__hmix_extra_s == "harmonic_mixture_figlike_hf" ||
-      __hmix_extra_s == "mixture_figlike_hf" ||
-      __hmix_extra_s == "hmix_figlike_hf" ||
-      __hmix_extra_s == "figlike_hf" ||
-      __hmix_extra_s == "fig_hf") {
-    return NcBoundaryMode::HarmonicMixtureFiglikeHF;
-  }
-
-  // Keep parser aliases in sync with eval_tcnn_nc_wos CLI aliases.
-  std::string __hmix_s_for_early_parse = text ? text : "";
-  for (char& c : __hmix_s_for_early_parse) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (__hmix_s_for_early_parse == "harmonic_mixture_smooth" ||
-      __hmix_s_for_early_parse == "mixture_smooth" ||
-      __hmix_s_for_early_parse == "hmix_smooth") {
-    return NcBoundaryMode::HarmonicMixtureSmooth;
-  }
-  if (__hmix_s_for_early_parse == "harmonic_mixture_figlike" ||
-      __hmix_s_for_early_parse == "mixture_figlike" ||
-      __hmix_s_for_early_parse == "hmix_figlike") {
-    return NcBoundaryMode::HarmonicMixtureFiglike;
-  }
-
   const std::string s(text ? text : "");
-  if (s == "poisson_figlike_hf_x5" || s == "poisson_hf_x5" || s == "poisson_figlike_x5") {
-    return NcBoundaryMode::PoissonFiglikeHfX5;
-  }
   if (s == "constant" || s == "constant_one" || s == "one" || s == "const1") return NcBoundaryMode::ConstantOne;
   if (s == "harmonic" || s == "harmonic_x2_minus_y2") return NcBoundaryMode::HarmonicX2MinusY2;
   if (s == "medium" || s == "external_charges_medium" || s == "charges_medium") return NcBoundaryMode::ExternalChargesMedium;

@@ -165,12 +165,8 @@ std::string normalize_mode_text(std::string s) {
 }
 
 n2wos::NcBoundaryMode parse_nc_boundary_mode_cli(const std::string& text) {
-  const std::string s = normalize_mode_text(text);
-  if (s == "poisson_figlike_hf_x5" || s == "poisson_hf_x5" || s == "poisson_figlike_x5") {
-    return n2wos::NcBoundaryMode::PoissonFiglikeHfX5;
-  }
   if (s == "poisson_multiscale" || s == "manufactured_poisson_multiscale" ||
-      s == "poisson_mscale" || s == "poisson") {
+      s == "poisson_mscale") {
     return n2wos::NcBoundaryMode::PoissonMultiscale;
   }
   if (s == "poisson_figlike_hf" || s == "manufactured_poisson_figlike_hf" ||
@@ -178,6 +174,7 @@ n2wos::NcBoundaryMode parse_nc_boundary_mode_cli(const std::string& text) {
     return n2wos::NcBoundaryMode::PoissonFiglikeHf;
   }
 
+  const std::string s = normalize_mode_text(text);
   if (s == "constant" || s == "constant_one" || s == "one" || s == "const1") {
     return n2wos::NcBoundaryMode::ConstantOne;
   }

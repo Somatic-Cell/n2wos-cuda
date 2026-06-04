@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/bunny_hmix_figlike_nc_error_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": -0.26349073648,
+  "vmax": 0.26349073648,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

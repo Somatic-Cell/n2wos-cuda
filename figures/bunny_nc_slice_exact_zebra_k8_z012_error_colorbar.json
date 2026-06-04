@@ -1,0 +1,9 @@
+{
+  "colorbar_png": "figures/bunny_nc_slice_exact_zebra_k8_z012_error_colorbar.png",
+  "colormap": "coolwarm",
+  "vmin": -0.28027743098,
+  "vmax": 0.28027743098,
+  "orientation": "horizontal",
+  "width": 512,
+  "height": 48
+}

@@ -1,0 +1,15 @@
+{
+  "texture_png": "figures/bunny_hmix_multiscale_gt_texture.png",
+  "estimates_csv": "results/bunny_hmix_multiscale_exact_z012_m0_estimates.csv",
+  "mask_image": "results/bunny_hmix_multiscale_exact_z012_m0_slice_mask.ppm",
+  "points_csv": "results/bunny_hmix_multiscale_exact_z012_m0_slice_points.csv",
+  "value_column": "analytic_value",
+  "subtract_column": null,
+  "abs_value": false,
+  "colormap": "coolwarm",
+  "vmin": 0.02392049693,
+  "vmax": 0.6653627753,
+  "inside_pixels": 127001,
+  "width": 512,
+  "height": 512
+}

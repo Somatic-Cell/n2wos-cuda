@@ -1,0 +1,15 @@
+{
+  "texture_png": "figures/bunny_hmix_figlike_nc_error_texture.png",
+  "estimates_csv": "results/bunny_hmix_figlike_exact_z012_m0_estimates.csv",
+  "mask_image": "results/bunny_hmix_figlike_exact_z012_m0_slice_mask.ppm",
+  "points_csv": "results/bunny_hmix_figlike_exact_z012_m0_slice_points.csv",
+  "value_column": "nc_wos_mean",
+  "subtract_column": "analytic_value",
+  "abs_value": false,
+  "colormap": "coolwarm",
+  "vmin": -0.26349073648,
+  "vmax": 0.26349073648,
+  "inside_pixels": 127001,
+  "width": 512,
+  "height": 512
+}
